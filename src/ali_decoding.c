@@ -177,11 +177,6 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			elog(ERROR, "mismatching encodings are not yet supported");
 	}
 
-	while(1)
-	{
-		pg_usleep(1000L);
-	}
-
 	return;
 }
 
