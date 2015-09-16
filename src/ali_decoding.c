@@ -541,6 +541,7 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 		idxoid = rel->rd_replidindex;
 		if (!OidIsValid(idxoid))
 		{
+			pq_sendbyte(out, 'P');
 			return;
 		}
 
@@ -578,6 +579,12 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 		
 		list_free_deep(latt);
 	}
+	else
+	{
+		pq_sendbyte(out, 'P');
+	}
+
+	return;
 }
 
 static void bdr_parse_notnull(DefElem *elem, const char *paramtype)
