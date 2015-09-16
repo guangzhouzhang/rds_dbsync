@@ -64,6 +64,7 @@ typedef struct
 
 	bool output_key_info;
 	bool output_column_info;
+	bool output_type_as_name;
 } Ali_OutputData;
 
 static void pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
@@ -170,9 +171,15 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 
 		data->output_key_info = true;
 		data->output_column_info = true;
+		data->output_type_as_name = true;
 
 		if (strcmp(data->client_encoding, GetDatabaseEncodingName()) != 0)
 			elog(ERROR, "mismatching encodings are not yet supported");
+	}
+
+	while(1)
+	{
+		pg_usleep(1000L);
 	}
 
 	return;
@@ -515,8 +522,8 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 		pq_sendint(out, attlen, 2);
 		appendBinaryStringInfo(out, attname, attlen);
 
+		if (data->output_type_as_name)
 		{
-			pq_sendbyte(out, 't');
 			pq_sendint(out, typelen, 2);
 			appendBinaryStringInfo(out, typname, typelen);
 		}
