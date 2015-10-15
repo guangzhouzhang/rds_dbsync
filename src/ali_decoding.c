@@ -162,6 +162,12 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 	}
 
+    /* Set defaults values */
+    if(data->client_encoding == NULL)
+    {
+        data->client_encoding = pstrdup(GetDatabaseEncodingName());
+    }
+
 	if (!is_init)
 	{		
 		/* fix me */
