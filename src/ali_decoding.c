@@ -508,11 +508,17 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 
 		Form_pg_attribute att = desc->attrs[i];
 
-		if (att->attisdropped)
-			continue;
+        if (att->attisdropped)
+        {
+            pq_sendint(out, 0, 2);
+            continue;
+        }
 
-		if (att->attnum < 0)
-			continue;
+        if (att->attnum < 0)
+        {
+            pq_sendint(out, 0, 2);
+            continue;
+        }
 
 		attname = quote_identifier(NameStr(att->attname));
 		attlen = strlen(attname) + 1;
