@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
  * ali_decoding.c
- *		  example logical decoding output plugin
+ *		  ali logical decoding output plugin
  *
- * Copyright (c) 2012-2014, PostgreSQL Global Development Group
+ * 
  *
  * IDENTIFICATION
- *		  contrib/test_decoding/test_decoding.c
+ *		  contrib/ali_decoding/ali_decoding.c
  *
  *-------------------------------------------------------------------------
  */
@@ -263,9 +263,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 {
 	Ali_OutputData *data;
 	MemoryContext old;
-//	Relation *relation;
-
-//	relation = heap_open(RelationGetRelid(relation), NoLock);
 
 	data = ctx->output_plugin_private;
 
@@ -315,7 +312,6 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(data->context);
 
-//	heap_close(relation, NoLock);
 }
 
 /*
@@ -405,7 +401,7 @@ write_tuple(Ali_OutputData *data, StringInfo out, Relation rel,
 			elog(ERROR, "cache lookup failed for type %u", att->atttypid);
 		typclass = (Form_pg_type) GETSTRUCT(typtup);
 
-		//decide_datum_transfer(data, att, typclass, &use_binary, &use_sendrecv);
+		/* decide_datum_transfer(data, att, typclass, &use_binary, &use_sendrecv); */
 
 		if (use_binary)
 		{
@@ -508,17 +504,17 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 
 		Form_pg_attribute att = desc->attrs[i];
 
-        if (att->attisdropped)
-        {
-            pq_sendint(out, 0, 2);
-            continue;
-        }
+		if (att->attisdropped)
+		{
+			pq_sendint(out, 0, 2);
+			continue;
+		}
 
-        if (att->attnum < 0)
-        {
-            pq_sendint(out, 0, 2);
-            continue;
-        }
+		if (att->attnum < 0)
+		{
+			pq_sendint(out, 0, 2);
+			continue;
+		}
 
 		attname = quote_identifier(NameStr(att->attname));
 		attlen = strlen(attname) + 1;
