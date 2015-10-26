@@ -33,6 +33,7 @@
 #include "libpq/pqformat.h"
 #include "access/tuptoaster.h"
 #include "mb/pg_wchar.h"
+#include "utils/guc.h"
 
 
 PG_MODULE_MAGIC;
@@ -181,6 +182,11 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 
 		if (strcmp(data->client_encoding, GetDatabaseEncodingName()) != 0)
 			elog(ERROR, "mismatching encodings are not yet supported");
+
+		if (extra_float_digits < 3)
+			(void) set_config_option("extra_float_digits", "3",
+								 PGC_USERSET, PGC_S_SESSION,
+								 GUC_ACTION_SAVE, true, 0);
 	}
 
 	return;
