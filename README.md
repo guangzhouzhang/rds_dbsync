@@ -63,7 +63,8 @@
 
 	1 编译机上下载安装 PG94 或更高版本的二进制,或用源码安装.
 	2 使用软链接或别的方式,把对应版本的 pg_config 链接到公共目录
-	例: ln -s /u01/pgsql_20150924/bin/pg_config /usr/bin/
+	例: ln -s /u01/pgsql_20150924/bin/pg_config /usr/bin/ 或 
+	export PATH=/u01/pgsql_20150924/bin
 	3 下载服务器端和客户端代码,make;make install;
 	
 ### 使用
@@ -78,3 +79,7 @@
 	执行demo.
 	对应的增量信息会输出到客户端.
 	可以参考 out_put_decode_message 解析和读取增量消息中的数据.
+
+## 限制
+    1 以 ctid 为条件的更新语句,在表处于 REPLICA FULL 时,update 语句无法完整还原.
+
