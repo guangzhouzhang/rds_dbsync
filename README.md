@@ -68,10 +68,10 @@
 	
 ### 使用
 
-	1 使用SQL或demo总的API创建 logical slot
+	1 使用SQL或 demo 中的API创建 logical slot
 	例: SELECT * FROM pg_create_logical_replication_slot('regression_slot', 'ali_decoding');
 	
-	2 可以用相应的SQL语句查看创建好的slot
+	2 可以用相应的 SQL 语句查看创建好的 slot
 	例: SELECT * FROM pg_replication_slots;
 	
 	3 在客户端目录下,编辑 demo.cpp 填入需要拉取增量的服务器的连接参数,并重新编译成新的demo.
