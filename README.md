@@ -74,7 +74,7 @@
 	2 可以用相应的SQL语句查看创建好的slot
 	例: SELECT * FROM pg_replication_slots;
 	
-	3 在客户端目录下,编辑 pg_recvlogical.cpp 填入需要拉取增量的服务器的连接参数,并重新编译成新的demo.
+	3 在客户端目录下,编辑 demo.cpp 填入需要拉取增量的服务器的连接参数,并重新编译成新的demo.
 	执行demo.
 	对应的增量信息会输出到客户端.
 	可以参考 out_put_decode_message 解析和读取增量消息中的数据.
