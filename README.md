@@ -1,17 +1,18 @@
 # PostgreSQL 增量同步方案详细设计
 
-## 方案目的
+## 一:方案目的
 
 	通过PG实例的增量数据同步方案,解决PG在数据迁移中需要进行全量同步,需要长时间服务的问题.
 	通过该方案,打通PG和其他数据产品间的数据通道,做到PG和其他数据产品和异构数据库间的实时的同步.
-## 增量同步方案的技术背景
+
+## 二:增量同步方案的技术背景
 
 	该方案基于PostgreSQL 9.4版本的逻辑流复制技术.
 	PG9.4 可以做到,利用逻辑流复制,把表的增量数据,以自定义格式的形式组织起来被客户端订阅.
 	自定义格式的增量数据是逻辑流复制的关键,通过PG内核给出了开放的接口(5个回调函数),可以把增量数据以任意的形式输出.
 	PG的客户端根据需要按照服务端规定的格式解析,就能得到完整的增量数据.
 	
-## 订阅增量数据的订阅规则
+## 三:订阅增量数据的订阅规则
 
 	PG增量同步方案只能获取对应DB中表的变化信息.
 	一张表能够被逻辑流复制订阅,需要满足下列三个条件之一
@@ -32,7 +33,7 @@
 	1 http://www.postgresql.org/docs/9.4/static/sql-altertable.html#SQL-CREATETABLE-REPLICA-IDENTITY
 	2 http://www.postgresql.org/docs/9.4/static/logicaldecoding.html
 	
-## 架构解析
+## 四:架构解析
 
 	PG的增量方案架构上分为两个大的部分
 	1 服务器端
@@ -57,9 +58,9 @@
 		c) delete
 		根据表 REPLICA 的状态不同,各类DML收到的信息略有变化.
 		
-## 编译和使用
+## 五:编译和使用
 
-### 编译
+### 1 编译
 
 	1 编译机上下载安装 PG94 或更高版本的二进制,或用源码安装.
 	2 使用软链接或别的方式,把对应版本的 pg_config 链接到公共目录
@@ -67,7 +68,7 @@
 	export PATH=/u01/pgsql_20150924/bin
 	3 下载服务器端和客户端代码,make;make install;
 	
-### 使用
+### 2 使用
 
 	1 使用SQL或 demo 中的API创建 logical slot
 	例: SELECT * FROM pg_create_logical_replication_slot('regression_slot', 'ali_decoding');
@@ -80,6 +81,5 @@
 	对应的增量信息会输出到客户端.
 	可以参考 out_put_decode_message 解析和读取增量消息中的数据.
 
-## 限制
+## 六:限制
     1 以 ctid 为条件的更新语句,在表处于 REPLICA FULL 时,update 语句无法完整还原.
-
