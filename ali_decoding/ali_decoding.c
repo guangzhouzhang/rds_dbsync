@@ -82,11 +82,8 @@ static void write_rel(StringInfo out, Relation rel, Ali_OutputData *data, int ac
 static void write_tuple(Ali_OutputData *data, StringInfo out, Relation rel,
 			HeapTuple tuple);
 static void write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action);
-static void bdr_parse_notnull(DefElem *elem, const char *paramtype);
-static void bdr_parse_uint32(DefElem *elem, uint32 *res);
-static void bdr_parse_size_t(DefElem *elem, size_t *res);
-static void bdr_parse_bool(DefElem *elem, bool *res);
-
+static void parse_notnull(DefElem *elem, const char *paramtype);
+static void parse_uint32(DefElem *elem, uint32 *res);
 
 void
 _PG_init(void)
@@ -134,23 +131,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		Assert(elem->arg == NULL || IsA(elem->arg, String));
 		
 		if (strcmp(elem->defname, "version") == 0)
-			bdr_parse_uint32(elem, &data->client_version);
-		else if (strcmp(elem->defname, "sizeof_int") == 0)
-			bdr_parse_size_t(elem, &data->client_sizeof_int);
-		else if (strcmp(elem->defname, "sizeof_long") == 0)
-			bdr_parse_size_t(elem, &data->client_sizeof_long);
-		else if (strcmp(elem->defname, "sizeof_datum") == 0)
-			bdr_parse_size_t(elem, &data->client_sizeof_datum);
-		else if (strcmp(elem->defname, "maxalign") == 0)
-			bdr_parse_size_t(elem, &data->client_maxalign);
-		else if (strcmp(elem->defname, "bigendian") == 0)
-			bdr_parse_bool(elem, &data->client_bigendian);
-		else if (strcmp(elem->defname, "float4_byval") == 0)
-			bdr_parse_bool(elem, &data->client_float4_byval);
-		else if (strcmp(elem->defname, "float8_byval") == 0)
-			bdr_parse_bool(elem, &data->client_float8_byval);
-		else if (strcmp(elem->defname, "integer_datetimes") == 0)
-			bdr_parse_bool(elem, &data->client_int_datetime);
+			parse_uint32(elem, &data->client_version);
 		else if (strcmp(elem->defname, "encoding") == 0)
 			data->client_encoding = pstrdup(strVal(elem->arg));
 		else
@@ -204,9 +185,6 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 
 /*
  * BEGIN callback
- *
- * If you change this you must also change the corresponding code in
- * bdr_apply.c . Make sure that any flags are in sync.
  */
 static void
 pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
@@ -385,11 +363,10 @@ write_tuple(Ali_OutputData *data, StringInfo out, Relation rel,
 	{
 		HeapTuple	typtup;
 		Form_pg_type typclass;
+		char   	   *outputstr = NULL;
+		int			len = 0;
 
 		Form_pg_attribute att = desc->attrs[i];
-
-		bool use_binary = false;
-		bool use_sendrecv = false;
 
 		if (isnull[i] || att->attisdropped)
 		{
@@ -407,83 +384,14 @@ write_tuple(Ali_OutputData *data, StringInfo out, Relation rel,
 			elog(ERROR, "cache lookup failed for type %u", att->atttypid);
 		typclass = (Form_pg_type) GETSTRUCT(typtup);
 
-		/* decide_datum_transfer(data, att, typclass, &use_binary, &use_sendrecv); */
+		pq_sendbyte(out, 't');	/* 'text' data follows */
 
-		if (use_binary)
-		{
-			pq_sendbyte(out, 'b');	/* binary data follows */
-
-			/* pass by value */
-			if (att->attbyval)
-			{
-				pq_sendint(out, att->attlen, 4); /* length */
-
-				enlargeStringInfo(out, att->attlen);
-				store_att_byval(out->data + out->len, values[i], att->attlen);
-				out->len += att->attlen;
-				out->data[out->len] = '\0';
-			}
-			/* fixed length non-varlena pass-by-reference type */
-			else if (att->attlen > 0)
-			{
-				pq_sendint(out, att->attlen, 4); /* length */
-
-				appendBinaryStringInfo(out, DatumGetPointer(values[i]),
-									   att->attlen);
-			}
-			/* varlena type */
-			else if (att->attlen == -1)
-			{
-				char *data = DatumGetPointer(values[i]);
-
-				/* send indirect datums inline */
-				if (VARATT_IS_EXTERNAL_INDIRECT(values[i]))
-				{
-					struct varatt_indirect redirect;
-					VARATT_EXTERNAL_GET_POINTER(redirect, data);
-					data = (char *) redirect.pointer;
-				}
-
-				Assert(!VARATT_IS_EXTERNAL(data));
-
-				pq_sendint(out, VARSIZE_ANY(data), 4); /* length */
-
-				appendBinaryStringInfo(out, data,
-									   VARSIZE_ANY(data));
-
-			}
-			else
-				elog(ERROR, "unsupported tuple type");
-		}
-		else if (use_sendrecv)
-		{
-			bytea	   *outputbytes;
-			int			len;
-
-			pq_sendbyte(out, 's');	/* 'send' data follows */
-
-			outputbytes =
-				OidSendFunctionCall(typclass->typsend, values[i]);
-
-			len = VARSIZE(outputbytes) - VARHDRSZ;
-			pq_sendint(out, len, 4); /* length */
-			pq_sendbytes(out, VARDATA(outputbytes), len); /* data */
-			pfree(outputbytes);
-		}
-		else
-		{
-			char   	   *outputstr;
-			int			len;
-
-			pq_sendbyte(out, 't');	/* 'text' data follows */
-
-			outputstr =
-				OidOutputFunctionCall(typclass->typoutput, values[i]);
-			len = strlen(outputstr) + 1;
-			pq_sendint(out, len, 4); /* length */
-			appendBinaryStringInfo(out, outputstr, len); /* data */
-			pfree(outputstr);
-		}
+		outputstr =
+		    OidOutputFunctionCall(typclass->typoutput, values[i]);
+		len = strlen(outputstr) + 1;
+		pq_sendint(out, len, 4); /* length */
+		appendBinaryStringInfo(out, outputstr, len); /* data */
+		pfree(outputstr);
 
 		ReleaseSysCache(typtup);
 	}
@@ -601,57 +509,26 @@ write_colum_info(StringInfo out, Relation rel, Ali_OutputData *data, int action)
 	return;
 }
 
-static void bdr_parse_notnull(DefElem *elem, const char *paramtype)
-{
-	if (elem->arg == NULL || strVal(elem->arg) == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("%s parameter \"%s\" had no value",
-				 paramtype, elem->defname)));
-}
-
-
 static void
-bdr_parse_uint32(DefElem *elem, uint32 *res)
+parse_uint32(DefElem *elem, uint32 *res)
 {
-	bdr_parse_notnull(elem, "uint32");
-	errno = 0;
-	*res = strtoul(strVal(elem->arg), NULL, 0);
+    parse_notnull(elem, "uint32");
+    errno = 0;
+    *res = strtoul(strVal(elem->arg), NULL, 0);
 
-	if (errno != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse uint32 value \"%s\" for parameter \"%s\": %m",
-						strVal(elem->arg), elem->defname)));
+    if (errno != 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("could not parse uint32 value \"%s\" for parameter \"%s\": %m",
+                        strVal(elem->arg), elem->defname)));
 }
 
-static void
-bdr_parse_size_t(DefElem *elem, size_t *res)
+static void 
+parse_notnull(DefElem *elem, const char *paramtype)
 {
-	bdr_parse_notnull(elem, "size_t");
-	errno = 0;
-	
-#ifdef HAVE_STRTOULL
-	*res = strtoull(strVal(elem->arg), NULL, 0);
-#else
-	*res = strtoul(strVal(elem->arg), NULL, 0);
-#endif
-
-	if (errno != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse size_t value \"%s\" for parameter \"%s\": %m",
-						strVal(elem->arg), elem->defname)));
+    if (elem->arg == NULL || strVal(elem->arg) == NULL)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("%s parameter \"%s\" had no value",
+                 paramtype, elem->defname)));
 }
-
-static void
-bdr_parse_bool(DefElem *elem, bool *res)
-{
-	bdr_parse_notnull(elem, "bool");
-	if (!parse_bool(strVal(elem->arg), res))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse boolean value \"%s\" for parameter \"%s\": %m",
-						strVal(elem->arg), elem->defname)));
-}
-
