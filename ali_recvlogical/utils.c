@@ -795,10 +795,6 @@ init_streaming(Decoder_handler *hander)
 			 hander->replication_slot, (uint32) (hander->startpos >> 32), (uint32) hander->startpos);
 
 	appendPQExpBuffer(query, "version '%u'", PG_VERSION_NUM);
-	appendPQExpBuffer(query, ", sizeof_int '%zu'", sizeof(int));
-	appendPQExpBuffer(query, ", sizeof_long '%zu'", sizeof(long));
-	appendPQExpBuffer(query, ", sizeof_datum '%zu'", sizeof(uintptr_t));
-	appendPQExpBuffer(query, ", maxalign '%d'", MAXIMUM_ALIGNOF);
 	appendPQExpBuffer(query, ", encoding '%s'", "UTF8");
 	appendPQExpBufferChar(query, ')');
 
