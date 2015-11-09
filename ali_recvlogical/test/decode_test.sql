@@ -1,4 +1,7 @@
 
+create schema test_case;
+set search_path=test_case;
+
 -- no index
 create table a(a int ,b text, c timestamptz);
 
@@ -267,14 +270,14 @@ CREATE TABLE seq_test
 insert into seq_test (name) values('test');
 
 -- toast
-create table t_kenyon(id int,vname varchar(48),remark text);
-select oid,relname,reltoastrelid from pg_class where relname = 't_kenyon';
-insert into t_kenyon select generate_series(1,2000),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God',500);
-insert into t_kenyon select generate_series(1,2),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',2000);
-insert into t_kenyon select generate_series(3,4),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',4000);
-insert into t_kenyon select generate_series(5,6),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',5500);
-insert into t_kenyon select generate_series(1,2),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',10000);
-insert into t_kenyon select generate_series(7,8),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',20000);
+-- create table t_kenyon(id int,vname varchar(48),remark text);
+-- select oid,relname,reltoastrelid from pg_class where relname = 't_kenyon';
+-- insert into t_kenyon select generate_series(1,2000),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God',500);
+-- insert into t_kenyon select generate_series(1,2),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',2000);
+-- insert into t_kenyon select generate_series(3,4),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',4000);
+-- insert into t_kenyon select generate_series(5,6),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',5500);
+-- insert into t_kenyon select generate_series(1,2),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',10000);
+-- insert into t_kenyon select generate_series(7,8),repeat('kenyon here'||'^_^',2),repeat('^_^ Kenyon is not God,Remark here!!',20000);
 
 -- utf8
 create table chinese_text(t text);
@@ -292,3 +295,4 @@ insert into chinese_text values('"''"');
 create table tf(c1 float4, c2 float8 ,c3 numeric);
 insert into tf values (1.5555555555555555555555,1.5555555555555555555555,1.5555555555555555555555);
 
+drop schema test_case cascade;
