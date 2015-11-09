@@ -179,6 +179,12 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 {
 	Ali_OutputData *data = ctx->output_plugin_private;
 
+	if(data->client_encoding != NULL)
+	{
+		pfree(data->client_encoding);
+		data->client_encoding = NULL;
+	}
+
 	/* cleanup our own resources via memory context reset */
 	MemoryContextDelete(data->context);
 }
