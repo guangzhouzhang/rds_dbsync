@@ -211,7 +211,7 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 
 	OutputPluginWrite(ctx, true);
 	MemoryContextSwitchTo(old);
-		
+
 	return;
 }
 
@@ -253,7 +253,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginWrite(ctx, true);
 	MemoryContextSwitchTo(old);
 
-	return;		
+	return;
 }
 
 void
