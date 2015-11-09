@@ -144,14 +144,14 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		}
 	}
 
-	/* Set defaults values */
-	if(data->client_encoding == NULL)
-	{
-		data->client_encoding = pstrdup(GetDatabaseEncodingName());
-	}
-
 	if (!is_init)
-	{		
+	{
+		/* Set defaults values */
+		if(data->client_encoding == NULL)
+		{
+			data->client_encoding = pstrdup(GetDatabaseEncodingName());
+		}
+
 		/* fix me */
 		data->allow_binary_protocol = false;
 		data->allow_sendrecv_protocol = false;
