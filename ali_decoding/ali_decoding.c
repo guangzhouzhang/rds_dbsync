@@ -187,6 +187,9 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 
 	/* cleanup our own resources via memory context reset */
 	MemoryContextDelete(data->context);
+
+	pfree(ctx->output_plugin_private);
+	ctx->output_plugin_private = NULL;
 }
 
 /*
