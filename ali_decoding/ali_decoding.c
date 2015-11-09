@@ -190,6 +190,11 @@ static void
 pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
 	int flags = 0;
+	MemoryContext old;
+	Ali_OutputData *data;
+
+	data = ctx->output_plugin_private;
+	old = MemoryContextSwitchTo(data->context);
 
 	AssertVariableIsOfType(&pg_decode_begin_txn, LogicalDecodeBeginCB);
 
@@ -205,6 +210,8 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	pq_sendint(ctx->out, txn->xid, 4);
 
 	OutputPluginWrite(ctx, true);
+	MemoryContextSwitchTo(old);
+		
 	return;
 }
 
@@ -226,6 +233,11 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
 	int flags = 0;
+	MemoryContext old;
+	Ali_OutputData *data;
+
+	data = ctx->output_plugin_private;
+	old = MemoryContextSwitchTo(data->context);
 
 	OutputPluginPrepareWrite(ctx, true);
 	pq_sendbyte(ctx->out, 'C');		/* sending COMMIT */
@@ -239,6 +251,9 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	pq_sendint64(ctx->out, txn->commit_time);
 
 	OutputPluginWrite(ctx, true);
+	MemoryContextSwitchTo(old);
+
+	return;		
 }
 
 void
