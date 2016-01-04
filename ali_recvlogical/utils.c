@@ -32,6 +32,11 @@
 #include <sys/time.h>
 #endif
 
+static int checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple);
+static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
+static bool escapeField(char *type);
+
+
 void
 out_put_key_att(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
 {
@@ -101,6 +106,168 @@ out_put_tuple(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *
 	}
 }
 
+static int
+checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple)
+{
+	int natt;
+	
+	if (tuple->natt == 0)
+	{
+		fprintf(stderr, "tuple is null");
+		return 1;
+	}
+
+	natt = msg->natt;	
+	if (tuple->natt != natt)
+	{
+		fprintf(stderr, "attnum %d not equal tuple attnum %d",  msg->natt, tuple->natt);
+		return 1;
+	}
+
+	return 0;
+}
+
+static void
+append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
+{
+	int i;
+	
+	appendPQExpBuffer(buffer, "(");
+	for (i = 0; i < tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+
+		appendPQExpBuffer(buffer, "%s", msg->attname[i]);
+		if(i != tuple->natt - 1)
+		{
+			appendPQExpBuffer(buffer, ",");
+		}
+	}
+	appendPQExpBuffer(buffer, ") ");
+}
+
+static void
+append_insert_values(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
+{
+	int i;
+
+	appendPQExpBuffer(buffer, "VALUES(");
+	for (i = 0; i < tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+		else if (tuple->isnull[i] && tuple->changed[i] && tuple->svalues[i] == NULL)
+		{
+			appendPQExpBuffer(buffer, "null");
+		}
+		else if (tuple->isnull[i] && tuple->changed[i] == false && tuple->svalues[i] == NULL)
+		{
+			appendPQExpBuffer(buffer, "null");
+		}
+		else if(escapeField(msg->atttype[i]))
+		{
+			appendPQExpBuffer(buffer, "'");
+			appendPQExpBuffer(buffer, "%s", tuple->svalues[i]);
+			appendPQExpBuffer(buffer, "'");
+		}
+		else
+		{
+			appendPQExpBuffer(buffer, "%s", tuple->svalues[i]);
+		}
+
+		if(i != tuple->natt - 1)
+		{
+			appendPQExpBuffer(buffer, ",");
+		}
+	}
+	appendPQExpBuffer(buffer, ");");
+
+}
+
+static 
+bool escapeField(char *type)
+{
+	bool needescape = true;
+
+	if (strcmp(type, "smallint") == 0)
+		needescape = false;
+	else if (strcmp(type, "integer") == 0)
+		needescape = false;
+	else if (strcmp(type, "bigint") == 0)
+		needescape = false;
+	else if (strcmp(type, "oid") == 0)
+		needescape = false;
+	else if (strcmp(type, "real") == 0)
+		needescape = false;
+	else if (strcmp(type, "double precision") == 0)
+		needescape = false;
+	else if (strcmp(type, "numeric") == 0)
+		needescape = false;
+
+	return needescape;
+}
+
+int
+out_put_tuple_to_sql(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+{
+	int kind = msg->type;
+	Decode_TupleData *new_tuple = NULL;
+	//Decode_TupleData *old_tuple = NULL;
+	int rc = 0;
+
+	switch (kind)
+	{
+		case MSGKIND_BEGIN:
+			{
+				appendPQExpBuffer(buffer, "begin;\n");
+			}
+			break;
+
+		case MSGKIND_COMMIT:
+			{
+				appendPQExpBuffer(buffer, "commit;\n");
+			}
+			break;
+
+		case MSGKIND_INSERT:
+			{
+				new_tuple = &(msg->newtuple);
+				rc = checktuple(msg, new_tuple);
+				if (rc != 0)
+					return 1;
+				appendPQExpBuffer(buffer, "INSERT INTO %s.%s ", msg->schemaname,msg->relname);
+				append_insert_colname(msg, buffer, new_tuple);
+				append_insert_values(msg, buffer, new_tuple);
+			}
+			break;
+
+		case MSGKIND_UPDATE:
+			{
+				appendPQExpBuffer(buffer, "UPDATE %s.%s ", msg->schemaname,msg->relname);
+			}
+			break;
+
+		case MSGKIND_DELETE:
+			{
+				appendPQExpBuffer(buffer, "DELETE FROM %s.%s ", msg->schemaname,msg->relname);
+				appendPQExpBuffer(buffer, "WHERE \n");
+			}
+			break;
+
+		default:
+			{
+				fprintf(stderr, "unknown action of type %c", kind);
+				exit(1);
+			}
+	}
+
+	return 0;
+}
 
 void
 out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
@@ -109,28 +276,30 @@ out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
 	int	bytes_written = 0;
 	PQExpBuffer buffer;
 	char	msgkind = MSGKIND_UNKNOWN;
+//	PQExpBuffer buffer_sql;
 
 	buffer = createPQExpBuffer();
+//	buffer_sql = createPQExpBuffer();
 
 	msgkind = msg->type;
 	switch (msgkind)
 	{
 		case MSGKIND_BEGIN:
 			{
-				appendPQExpBuffer(buffer, "BEGIN %u (at %s)\n", msg->xid, timestamptz_to_str(msg->tm));
+				//appendPQExpBuffer(buffer, "BEGIN %u (at %s)\n", msg->xid, timestamptz_to_str(msg->tm));
 			}
 			break;
 		case MSGKIND_COMMIT:
 			{
-				appendPQExpBuffer(buffer, "COMMIT (at %s) lsn %X/%X\n\n", timestamptz_to_str(msg->tm),
-								(uint32)(msg->lsn>>32), (uint32)msg->lsn);
+				//appendPQExpBuffer(buffer, "COMMIT (at %s) lsn %X/%X\n\n", timestamptz_to_str(msg->tm),
+				//				(uint32)(msg->lsn>>32), (uint32)msg->lsn);
 			}
 			break;
 		case MSGKIND_INSERT:
 			{
-				appendPQExpBuffer(buffer, "INSERT TABLE %s.%s\n", msg->schemaname,msg->relname);
-				appendPQExpBuffer(buffer, "new tuple:\n");
-				out_put_tuple(msg, buffer, &msg->newtuple);
+				//appendPQExpBuffer(buffer, "INSERT TABLE %s.%s\n", msg->schemaname,msg->relname);
+				//appendPQExpBuffer(buffer, "new tuple:\n");
+				//out_put_tuple(msg, buffer, &msg->newtuple);
 			}
 			break;
 		case MSGKIND_UPDATE:
@@ -183,6 +352,8 @@ out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
 
 	}
 
+	out_put_tuple_to_sql(msg, buffer);
+
 	bytes_left = buffer->len;
 	bytes_written = 0;
 
@@ -215,7 +386,6 @@ out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
 	}
 	
 	destroyPQExpBuffer(buffer);
-
 }
 
 #define MAXDATELEN		128
@@ -1120,4 +1290,5 @@ elog_finish(int elevel, const char *fmt,...)
 	printf("%s\n", fmt);
 }
 */
+
 
