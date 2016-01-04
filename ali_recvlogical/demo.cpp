@@ -86,8 +86,10 @@ main(int argc, char **argv)
 	hander->do_start_slot = true;
 	hander->do_drop_slot = false;
 	//hander->connection_string = (char *)"hostaddr=10.98.109.113 port=5433 dbname=test user=test password=pgsql";
-	hander->connection_string = (char *)"hostaddr=10.98.109.111 port=3012 dbname=base_dplus_phoenixprod user=pg012 password=pgsql";
-
+	//hander->connection_string = (char *)"hostaddr=10.98.109.111 port=3012 dbname=base_dplus_phoenixprod user=pg012 password=pgsql";
+	hander->connection_string = (char *)"hostaddr=10.101.82.48 port=5432 dbname=test user=test password=pgsql";
+	// SELECT * FROM pg_create_logical_replication_slot('regression_slot', 'ali_decoding');
+	
 	init_logfile(hander);
 
 	rc = check_handler_parameters(hander);
