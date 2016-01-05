@@ -34,7 +34,6 @@
 
 static int checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple);
 static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
-static bool escapeField(char *type);
 static size_t quote_literal_internal(char *dst, const char *src, size_t len);
 static void quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer);
 static void append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
@@ -184,29 +183,6 @@ append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 	}
 	appendPQExpBuffer(buffer, ");");
 
-}
-
-static 
-bool escapeField(char *type)
-{
-	bool needescape = true;
-
-	if (strcmp(type, "smallint") == 0)
-		needescape = false;
-	else if (strcmp(type, "integer") == 0)
-		needescape = false;
-	else if (strcmp(type, "bigint") == 0)
-		needescape = false;
-	else if (strcmp(type, "oid") == 0)
-		needescape = false;
-	else if (strcmp(type, "real") == 0)
-		needescape = false;
-	else if (strcmp(type, "double precision") == 0)
-		needescape = false;
-	else if (strcmp(type, "numeric") == 0)
-		needescape = false;
-
-	return needescape;
 }
 
 int
@@ -1396,3 +1372,37 @@ quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQE
 	return;
 }
 
+Decoder_handler *
+init_hander(void)
+{
+	Decoder_handler *hander = NULL;
+	uint32		hi = 0;
+	uint32		lo = 0;
+
+	hander = (Decoder_handler *)malloc(sizeof(Decoder_handler));
+	memset(hander, 0, sizeof(Decoder_handler));
+	hander->verbose = 1;
+	hander->startpos = InvalidXLogRecPtr;
+	hander->outfd = -1;
+	
+	hander->recvpos = InvalidXLogRecPtr;
+	hander->flushpos= InvalidXLogRecPtr;
+	hander->startpos= InvalidXLogRecPtr;
+
+	hander->standby_message_timeout = 10 * 1000;
+	hander->last_status = -1;
+	hander->progname = (char *)"pg_recvlogical";
+	
+
+	hander->outfile = (char *)"-";
+	hander->startpos = ((uint64) hi) << 32 | lo;
+	hander->replication_slot = (char *)"regression_slot";
+	hander->do_create_slot = false;
+	hander->do_start_slot = true;
+	hander->do_drop_slot = false;
+
+	hander->buffer = (StringInfoData *)malloc(sizeof(StringInfoData));
+	initStringInfo(hander->buffer);
+
+	return hander;
+}

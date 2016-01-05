@@ -186,6 +186,7 @@ extern int init_logfile(Decoder_handler *hander);
 extern int init_streaming(Decoder_handler *hander);
 extern ALI_PG_DECODE_MESSAGE *exec_logical_decoder(Decoder_handler *hander, volatile bool *time_to_stop);
 extern void pg_sleep(long microsec);
+extern Decoder_handler *init_hander(void);
 
 #ifdef __cplusplus
 }
