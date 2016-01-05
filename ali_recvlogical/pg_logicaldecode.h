@@ -111,6 +111,8 @@ typedef struct Decoder_handler
 	char	   *copybuf;
 	int			standby_message_timeout;
 	int64		last_status;
+
+	StringInfo buffer;
 } Decoder_handler;
 
 
@@ -171,9 +173,9 @@ __attribute__((format(PG_PRINTF_ATTRIBUTE, 2, 3)));
 extern char *timestamptz_to_str(TimestampTz dt);
 extern int64 timestamptz_to_time_t(TimestampTz t);
 extern void out_put_tuple(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
-extern int out_put_tuple_to_sql(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
+extern int out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
 extern void out_put_key_att(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
-extern void out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd);
+extern void out_put_decode_message(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, int outfd);
 extern bool sendFeedback(Decoder_handler *hander, int64 now, bool force, bool replyRequested);
 extern int initialize_connection(Decoder_handler *hander);
 extern void disconnect(Decoder_handler *hander);

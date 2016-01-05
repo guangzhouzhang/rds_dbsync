@@ -63,6 +63,7 @@ main(int argc, char **argv)
 	Decoder_handler *hander;
 	int		rc = 0;
 	bool	init = false;
+	StringInfoData buffer;
 
 	hander = (Decoder_handler *)malloc(sizeof(Decoder_handler));
 	memset(hander, 0, sizeof(Decoder_handler));
@@ -130,6 +131,8 @@ main(int argc, char **argv)
 		exit(0);
 	}
 
+	hander->buffer = &buffer;
+	initStringInfo(hander->buffer);
 	while (true)
 	{
 		ALI_PG_DECODE_MESSAGE *msg = NULL;
@@ -159,7 +162,7 @@ main(int argc, char **argv)
 		msg = exec_logical_decoder(hander, &time_to_abort);
 		if (msg != NULL)
 		{
-			out_put_decode_message(msg, hander->outfd);
+			out_put_decode_message(hander, msg, hander->outfd);
 			hander->flushpos = hander->recvpos;
 		}
 		else

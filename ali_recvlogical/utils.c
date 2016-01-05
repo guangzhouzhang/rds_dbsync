@@ -36,7 +36,8 @@ static int checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple);
 static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 static bool escapeField(char *type);
 static size_t quote_literal_internal(char *dst, const char *src, size_t len);
-static char *quote_literal_cstr(const char *rawstr);
+static void quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer);
+static void append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 
 
 void
@@ -152,7 +153,7 @@ append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_Tup
 }
 
 static void
-append_insert_values(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
+append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
 {
 	int i;
 
@@ -171,15 +172,9 @@ append_insert_values(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_Tupl
 		{
 			appendPQExpBuffer(buffer, "null");
 		}
-		else if(escapeField(msg->atttype[i]))
-		{
-			char *tmp = quote_literal_cstr(tuple->svalues[i]);
-			appendPQExpBuffer(buffer, "%s", tmp);
-			pfree(tmp);
-		}
 		else
 		{
-			appendPQExpBuffer(buffer, "%s", tuple->svalues[i]);
+			quote_literal_local(hander, tuple->svalues[i], msg->atttype[i], buffer);
 		}
 
 		if(i != tuple->natt - 1)
@@ -215,7 +210,7 @@ bool escapeField(char *type)
 }
 
 int
-out_put_tuple_to_sql(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
 {
 	int kind = msg->type;
 	Decode_TupleData *new_tuple = NULL;
@@ -244,7 +239,7 @@ out_put_tuple_to_sql(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
 					return 1;
 				appendPQExpBuffer(buffer, "INSERT INTO %s.%s ", msg->schemaname,msg->relname);
 				append_insert_colname(msg, buffer, new_tuple);
-				append_insert_values(msg, buffer, new_tuple);
+				append_insert_values(hander, msg, buffer, new_tuple);
 			}
 			break;
 
@@ -272,7 +267,7 @@ out_put_tuple_to_sql(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
 }
 
 void
-out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
+out_put_decode_message(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, int outfd)
 {
 	int bytes_left = 0;
 	int	bytes_written = 0;
@@ -354,7 +349,7 @@ out_put_decode_message(ALI_PG_DECODE_MESSAGE *msg, int outfd)
 
 	}
 
-	out_put_tuple_to_sql(msg, buffer);
+	out_put_tuple_to_sql(hander, msg, buffer);
 
 	bytes_left = buffer->len;
 	bytes_written = 0;
@@ -1334,20 +1329,70 @@ quote_literal_internal(char *dst, const char *src, size_t len)
  * quote_literal_cstr -
  *	  returns a properly quoted literal
  */
-static char *
-quote_literal_cstr(const char *rawstr)
+static void
+quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer)
 {
 	char	   *result;
 	int			len;
 	int			newlen;
+	StringInfo	s = hander->buffer;
+	bool need_process = true;
+
+	if (strcmp(type, "smallint") == 0)
+		need_process = false;
+	else if (strcmp(type, "integer") == 0)
+		need_process = false;
+	else if (strcmp(type, "bigint") == 0)
+		need_process = false;
+	else if (strcmp(type, "oid") == 0)
+		need_process = false;
+	else if (strcmp(type, "real") == 0)
+		need_process = false;
+	else if (strcmp(type, "double precision") == 0)
+		need_process = false;
+	else if (strcmp(type, "numeric") == 0)
+		need_process = false;
+
+	if (need_process == false)
+	{
+		appendPQExpBuffer(buffer, "%s", rawstr);
+		return;
+	}
+
+	if (strcmp(type, "timestamp without time zone") == 0)
+		need_process = false;
+	else if (strcmp(type, "timestamp with time zone") == 0)
+		need_process = false;
+	else if (strcmp(type, "time without time zone") == 0)
+		need_process = false;
+	else if (strcmp(type, "time with time zone") == 0)
+		need_process = false;
+	else if (strcmp(type, "money") == 0)
+		need_process = false;
+	else if (strcmp(type, "date") == 0)
+		need_process = false;
+	else if (strcmp(type, "interval") == 0)
+		need_process = false;
+
+	if (need_process == false)
+	{
+		appendPQExpBuffer(buffer, "'");
+		appendPQExpBuffer(buffer, "%s", rawstr);
+		appendPQExpBuffer(buffer, "'");
+		return;
+	}
 
 	len = strlen(rawstr);
-	/* We make a worst-case result area; wasting a little space is OK */
-	result = palloc(len * 2 + 3);
+	resetStringInfo(s);
+	appendStringInfoSpaces(s, len * 2 + 3);
+
+	result = s->data;
 
 	newlen = quote_literal_internal(result, rawstr, len);
 	result[newlen] = '\0';
 
-	return result;
+	appendPQExpBuffer(buffer, "%s", result);
+
+	return;
 }
 
