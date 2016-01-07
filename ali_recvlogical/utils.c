@@ -32,14 +32,18 @@
 #include <sys/time.h>
 #endif
 
-static int checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple);
+static int checktuple(ALI_PG_DECODE_MESSAGE *msg, int kind, Decode_TupleData *new_tuple, Decode_TupleData *old_tuple);
 static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 static size_t quote_literal_internal(char *dst, const char *src, size_t len);
 static void quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer);
 static void append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 static void append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
-
-
+static void append_update_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
+static bool is_key_column(ALI_PG_DECODE_MESSAGE *msg, char *colname);
+static bool append_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple, int i);
+static void append_update_statement_key_not_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
+static void append_update_statement_key_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
+static void append_update_statement_full_row(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
 
 void
 out_put_key_att(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
@@ -111,20 +115,35 @@ out_put_tuple(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *
 }
 
 static int
-checktuple(ALI_PG_DECODE_MESSAGE *msg, Decode_TupleData *tuple)
+checktuple(ALI_PG_DECODE_MESSAGE *msg, int kind, Decode_TupleData *new_tuple, Decode_TupleData *old_tuple)
 {
-	int natt;
-	
-	if (tuple->natt == 0)
+	if (kind == MSGKIND_DELETE && msg->has_key_or_old == false)
 	{
-		fprintf(stderr, "tuple is null");
+		fprintf(stderr, "update or delete message does not contain old key or old tuple");
+		return 1;
+	}
+	
+	if ((kind == MSGKIND_INSERT || kind == MSGKIND_UPDATE) && new_tuple->natt == 0)
+	{
+		fprintf(stderr, "new tuple is null");
 		return 1;
 	}
 
-	natt = msg->natt;	
-	if (tuple->natt != natt)
+	if (kind == MSGKIND_DELETE && old_tuple->natt == 0)
 	{
-		fprintf(stderr, "attnum %d not equal tuple attnum %d",  msg->natt, tuple->natt);
+		fprintf(stderr, "old tuple is null");
+		return 1;
+	}
+
+	if (kind == MSGKIND_DELETE && msg->k_natt == 0)
+	{
+		fprintf(stderr, "delete message does not contain key column info");
+		return 1;
+	}
+
+	if ((kind == MSGKIND_INSERT || kind == MSGKIND_UPDATE) && new_tuple->natt != msg->natt)
+	{
+		fprintf(stderr, "attnum %d not equal tuple attnum %d",  msg->natt, new_tuple->natt);
 		return 1;
 	}
 
@@ -197,7 +216,6 @@ static void
 append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
 {
 	int i;
-	int j;
 	bool	first = true;
 
 	appendPQExpBuffer(buffer, "WHERE ");
@@ -213,15 +231,7 @@ append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQEx
 
 			if (msg->k_natt)
 			{
-				for(j = 0; j < msg->k_natt; j++)
-				{
-					if (strcmp(msg->attname[i], msg->k_attname[j]) == 0)
-					{
-						is_key = true;
-						break;
-					}
-				}
-
+				is_key = is_key_column(msg, msg->attname[i]);
 				if (is_key == false)
 					continue;
 			}
@@ -236,23 +246,373 @@ append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQEx
 			appendPQExpBuffer(buffer, " AND ");
 		}
 
-		if (tuple->isnull[i] && tuple->changed[i] && tuple->svalues[i] == NULL)
-		{
-			appendPQExpBuffer(buffer, "%s", msg->attname[i]);
-			appendPQExpBuffer(buffer, "=");
-			appendPQExpBuffer(buffer, "null");
-		}
-		else
-		{
-			appendPQExpBuffer(buffer, "%s", msg->attname[i]);
-			appendPQExpBuffer(buffer, "=");
-			quote_literal_local(hander, tuple->svalues[i], msg->atttype[i], buffer);
-		}
+		append_values(hander, msg, buffer, tuple, i);
 	}
 	appendPQExpBuffer(buffer, ";");
 
 }
 
+static void
+append_update_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+{
+	Decode_TupleData *new_tuple = &(msg->newtuple);
+	Decode_TupleData *old_tuple = &(msg->oldtuple);
+	bool	full_row_mode = false;
+	bool 	key_not_change = false;
+
+	if (msg->k_natt == 0)
+	{
+		if(msg->has_key_or_old == false || old_tuple->natt == 0)
+		{
+			fprintf(stderr, "invalid tuple data");
+			return;
+		}
+		else if(msg->natt == new_tuple->natt &&
+			msg->natt == old_tuple->natt)
+		{
+			full_row_mode = true;
+		}
+		else
+		{
+			fprintf(stderr, "invalid tuple data");
+			return;
+		}
+	}
+	else if (old_tuple->natt == 0)
+	{
+		full_row_mode = false;
+		key_not_change = true;
+	}
+	else
+	{
+		full_row_mode = false;
+		key_not_change = false;
+	}
+
+	appendPQExpBuffer(buffer, "UPDATE %s.%s ", msg->schemaname, msg->relname);
+
+	if(full_row_mode)
+	{
+		append_update_statement_full_row(hander, msg, buffer);
+	}
+	else if(key_not_change)
+	{
+		append_update_statement_key_not_change(hander, msg, buffer);
+	}
+	else
+	{
+		append_update_statement_key_change(hander, msg, buffer);
+	}
+
+	return;
+}
+
+static void
+append_update_statement_key_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+{
+	Decode_TupleData *new_tuple = &(msg->newtuple);
+	Decode_TupleData *old_tuple = &(msg->oldtuple);
+	int i;
+	bool	first = true;
+	PQExpBuffer where;
+	PQExpBuffer set;
+
+	where = createPQExpBuffer();
+	set = createPQExpBuffer();
+
+	appendPQExpBuffer(where, " WHERE ");
+	for (i = 0; i < old_tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+		else
+		{
+			bool is_key = false;
+
+			if (msg->k_natt)
+			{
+				is_key = is_key_column(msg, msg->attname[i]);
+				if (is_key == false)
+					continue;
+			}
+		}
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBuffer(where, " AND ");
+		}
+
+		append_values(hander, msg, where, old_tuple, i);
+	}
+	appendPQExpBuffer(where, ";");
+
+	first = true;
+	appendPQExpBuffer(set, " SET ");
+	for (i = 0; i < new_tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBuffer(set, " , ");
+		}
+
+		append_values(hander, msg, set, new_tuple, i);
+	}
+
+	appendPQExpBufferStr(buffer, set->data);
+	appendPQExpBufferStr(buffer, where->data);
+
+	destroyPQExpBuffer(set);
+	destroyPQExpBuffer(where);
+
+	return;
+}
+
+static void
+append_update_statement_full_row(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+{
+	Decode_TupleData *new_tuple = &(msg->newtuple);
+	Decode_TupleData *old_tuple = &(msg->oldtuple);
+	int i;
+	bool	first = true;
+	PQExpBuffer where;
+	PQExpBuffer set;
+	bool	*droped = NULL;
+	bool	*change = NULL;
+	bool	*old_isnull = NULL;
+	bool	*uchange_toast = NULL;
+
+	where = createPQExpBuffer();
+	set = createPQExpBuffer();
+
+	droped = (bool *)palloc0(sizeof(bool) * msg->natt);
+	change = (bool *)palloc0(sizeof(bool) * msg->natt);
+	old_isnull = (bool *)palloc0(sizeof(bool) * msg->natt);
+	uchange_toast = (bool *)palloc0(sizeof(bool) * msg->natt);
+
+	appendPQExpBuffer(where, " WHERE ");
+	for (i = 0; i < old_tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			droped[i] = true;
+			continue;
+		}
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBuffer(where, " AND ");
+		}
+
+		old_isnull[i] = append_values(hander, msg, where, old_tuple, i);
+		if (old_tuple->isnull[i] && old_tuple->changed[i] == false && old_tuple->svalues[i] == NULL)
+		{
+			uchange_toast[i] = true;
+		}
+	}
+	appendPQExpBuffer(where, ";");
+
+	for (i = 0; i < new_tuple->natt; i++)
+	{
+		if (droped[i])
+		{
+			continue;
+		}
+		
+		if (new_tuple->isnull[i] && new_tuple->changed[i] && new_tuple->svalues[i] == NULL)
+		{
+			if (old_isnull[i])
+			{
+				change[i] = false;
+			}
+			else if(uchange_toast[i])
+			{
+				change[i] = true;
+			}
+			else
+			{
+				change[i] = true;
+			}
+		}
+		else if (new_tuple->isnull[i] && new_tuple->changed[i] == false && new_tuple->svalues[i] == NULL)
+		{
+			if (old_isnull[i])
+			{
+				change[i] = false;
+			}
+			else if(uchange_toast[i])
+			{
+				change[i] = false;
+			}
+			else
+			{
+				change[i] = false;
+			}
+		}
+		else
+		{
+			if (old_isnull[i])
+			{
+				change[i] = true;
+			}
+			else if(uchange_toast[i])
+			{
+				change[i] = false;
+			}
+			else
+			{
+				if (new_tuple->svalues[i] == NULL || old_tuple->svalues[i] == NULL)
+				{
+					fprintf(stderr, "invalid old or new tuple data");
+					change[i] = false;
+				}
+				else if (strcmp(new_tuple->svalues[i], old_tuple->svalues[i]) == 0)
+				{
+					change[i] = false;
+				}
+				else
+				{
+					change[i] = true;
+				}
+			}
+		}
+	}
+
+	first = true;
+	appendPQExpBuffer(set, " SET ");
+	for (i = 0; i < new_tuple->natt; i++)
+	{
+		if (droped[i])
+		{
+			continue;
+		}
+
+		if (change[i])
+		{
+			if (first)
+			{
+				first = false;
+			}
+			else
+			{
+				appendPQExpBuffer(set, " , ");
+			}
+			append_values(hander, msg, set, new_tuple, i);
+		}
+	}
+
+	appendPQExpBufferStr(buffer, set->data);
+	appendPQExpBufferStr(buffer, where->data);
+
+	destroyPQExpBuffer(set);
+	destroyPQExpBuffer(where);
+
+	return;
+}
+
+
+static void
+append_update_statement_key_not_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
+{
+	Decode_TupleData *new_tuple = &(msg->newtuple);
+	int i;
+	bool	first = true;
+	PQExpBuffer where;
+	PQExpBuffer set;
+
+	where = createPQExpBuffer();
+	set = createPQExpBuffer();
+
+	appendPQExpBuffer(where, " WHERE ");
+	for (i = 0; i < new_tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+		else
+		{
+			bool is_key = false;
+
+			if (msg->k_natt)
+			{
+				is_key = is_key_column(msg, msg->attname[i]);
+				if (is_key == false)
+					continue;
+			}
+		}
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBuffer(where, " AND ");
+		}
+
+		append_values(hander, msg, where, new_tuple, i);
+	}
+	appendPQExpBuffer(where, ";");
+
+	first = true;
+	appendPQExpBuffer(set, " SET ");
+	for (i = 0; i < new_tuple->natt; i++)
+	{
+		if (msg->attname[i] == NULL)
+		{
+			continue;
+		}
+		else
+		{
+			bool is_key = false;
+			if (msg->k_natt)
+			{
+				is_key = is_key_column(msg, msg->attname[i]);
+				if (is_key == true)
+					continue;
+			}
+		}
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBuffer(set, " , ");
+		}
+
+		append_values(hander, msg, set, new_tuple, i);
+	}
+
+
+	appendPQExpBufferStr(buffer, set->data);
+	appendPQExpBufferStr(buffer, where->data);
+
+	destroyPQExpBuffer(set);
+	destroyPQExpBuffer(where);
+
+	return;
+}
 
 int
 out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
@@ -261,6 +621,12 @@ out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 	Decode_TupleData *new_tuple = NULL;
 	Decode_TupleData *old_tuple = NULL;
 	int rc = 0;
+
+	new_tuple = &(msg->newtuple);
+	old_tuple = &(msg->oldtuple);
+	rc = checktuple(msg, kind, new_tuple, old_tuple);
+	if (rc != 0)
+		return 1;
 
 	switch (kind)
 	{
@@ -278,10 +644,6 @@ out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 
 		case MSGKIND_INSERT:
 			{
-				new_tuple = &(msg->newtuple);
-				rc = checktuple(msg, new_tuple);
-				if (rc != 0)
-					return 1;
 				appendPQExpBuffer(buffer, "INSERT INTO %s.%s ", msg->schemaname,msg->relname);
 				append_insert_colname(msg, buffer, new_tuple);
 				append_insert_values(hander, msg, buffer, new_tuple);
@@ -290,16 +652,12 @@ out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 
 		case MSGKIND_UPDATE:
 			{
-				appendPQExpBuffer(buffer, "UPDATE %s.%s ", msg->schemaname,msg->relname);
+				append_update_statement(hander, msg, buffer);
 			}
 			break;
 
 		case MSGKIND_DELETE:
 			{
-				old_tuple = &(msg->oldtuple);
-				rc = checktuple(msg, old_tuple);
-				if (rc != 0)
-					return 1;
 				appendPQExpBuffer(buffer, "DELETE FROM %s.%s ", msg->schemaname,msg->relname);
 				append_where_statement(hander, msg, buffer, old_tuple);
 			}
@@ -1479,3 +1837,49 @@ init_hander(void)
 
 	return hander;
 }
+
+static bool
+is_key_column(ALI_PG_DECODE_MESSAGE *msg, char *colname)
+{
+	int j = 0;
+	bool	is_key = false;
+
+	if (colname == NULL)
+	{
+		return false;
+	}
+
+	for(j = 0; j < msg->k_natt; j++)
+	{
+		if (strcmp(colname, msg->k_attname[j]) == 0)
+		{
+			is_key = true;
+			break;
+		}
+	}
+
+	return is_key;
+}
+
+static bool
+append_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple, int i)
+{
+	bool isnull = false;
+
+	if (tuple->isnull[i] && tuple->changed[i] && tuple->svalues[i] == NULL)
+	{
+		appendPQExpBuffer(buffer, "%s", msg->attname[i]);
+		appendPQExpBuffer(buffer, "=");
+		appendPQExpBuffer(buffer, "null");	
+		isnull = true;
+	}
+	else
+	{
+		appendPQExpBuffer(buffer, "%s", msg->attname[i]);
+		appendPQExpBuffer(buffer, "=");
+		quote_literal_local(hander, tuple->svalues[i], msg->atttype[i], buffer);
+	}
+
+	return isnull;
+}
+
