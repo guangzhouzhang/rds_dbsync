@@ -680,80 +680,81 @@ out_put_decode_message(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, int 
 	int	bytes_written = 0;
 	PQExpBuffer buffer;
 	char	msgkind = MSGKIND_UNKNOWN;
-//	PQExpBuffer buffer_sql;
 
 	buffer = createPQExpBuffer();
-//	buffer_sql = createPQExpBuffer();
-
-	msgkind = msg->type;
-	switch (msgkind)
+	
+	if (hander->verbose)
 	{
-		case MSGKIND_BEGIN:
-			{
-				//appendPQExpBuffer(buffer, "BEGIN %u (at %s)\n", msg->xid, timestamptz_to_str(msg->tm));
-			}
-			break;
-		case MSGKIND_COMMIT:
-			{
-				//appendPQExpBuffer(buffer, "COMMIT (at %s) lsn %X/%X\n\n", timestamptz_to_str(msg->tm),
-				//				(uint32)(msg->lsn>>32), (uint32)msg->lsn);
-			}
-			break;
-		case MSGKIND_INSERT:
-			{
-				//appendPQExpBuffer(buffer, "INSERT TABLE %s.%s\n", msg->schemaname,msg->relname);
-				//appendPQExpBuffer(buffer, "new tuple:\n");
-				//out_put_tuple(msg, buffer, &msg->newtuple);
-			}
-			break;
-		case MSGKIND_UPDATE:
-			{
-				appendPQExpBuffer(buffer, "UPDATE TABLE %s.%s\n", msg->schemaname,msg->relname);
-				out_put_key_att(msg, buffer);
-				appendPQExpBuffer(buffer, "new tuple:\n");
-				out_put_tuple(msg, buffer, &msg->newtuple);
+		msgkind = msg->type;
+		switch (msgkind)
+		{
+			case MSGKIND_BEGIN:
+				{
+					//appendPQExpBuffer(buffer, "BEGIN %u (at %s)\n", msg->xid, timestamptz_to_str(msg->tm));
+				}
+				break;
+			case MSGKIND_COMMIT:
+				{
+					//appendPQExpBuffer(buffer, "COMMIT (at %s) lsn %X/%X\n\n", timestamptz_to_str(msg->tm),
+					//				(uint32)(msg->lsn>>32), (uint32)msg->lsn);
+				}
+				break;
+			case MSGKIND_INSERT:
+				{
+					appendPQExpBuffer(buffer, "INSERT TABLE %s.%s\n", msg->schemaname,msg->relname);
+					appendPQExpBuffer(buffer, "new tuple:\n");
+					out_put_tuple(msg, buffer, &msg->newtuple);
+				}
+				break;
+			case MSGKIND_UPDATE:
+				{
+					appendPQExpBuffer(buffer, "UPDATE TABLE %s.%s\n", msg->schemaname,msg->relname);
+					out_put_key_att(msg, buffer);
+					appendPQExpBuffer(buffer, "new tuple:\n");
+					out_put_tuple(msg, buffer, &msg->newtuple);
 
-				if(msg->has_key_or_old == false)
-				{
-					appendPQExpBuffer(buffer, "null old or key tuple\n");
+					if(msg->has_key_or_old == false)
+					{
+						appendPQExpBuffer(buffer, "null old or key tuple\n");
+					}
+					else if (msg->natt == msg->oldtuple.natt)
+					{
+						appendPQExpBuffer(buffer, "old tuple:\n");
+						out_put_tuple(msg, buffer, &msg->oldtuple);
+					}
+					else
+					{
+						appendPQExpBuffer(buffer, "key tuple:\n");
+						out_put_tuple(msg, buffer, &msg->oldtuple);
+					}
+					
 				}
-				else if (msg->natt == msg->oldtuple.natt)
+				break;
+			case MSGKIND_DELETE:
 				{
-					appendPQExpBuffer(buffer, "old tuple:\n");
-					out_put_tuple(msg, buffer, &msg->oldtuple);
+					appendPQExpBuffer(buffer, "DELETE TABLE %s.%s\n", msg->schemaname,msg->relname);
+					out_put_key_att(msg, buffer);
+					if(msg->has_key_or_old == false)
+					{
+						appendPQExpBuffer(buffer, "null old or key tuple\n");
+					}
+					else if (msg->natt == msg->oldtuple.natt)
+					{
+						appendPQExpBuffer(buffer, "old tuple:\n");
+						out_put_tuple(msg, buffer, &msg->oldtuple);
+					}
+					else
+					{
+						appendPQExpBuffer(buffer, "key tuple:\n");
+						out_put_tuple(msg, buffer, &msg->oldtuple);
+					}
 				}
-				else
-				{
-					appendPQExpBuffer(buffer, "key tuple:\n");
-					out_put_tuple(msg, buffer, &msg->oldtuple);
-				}
-				
-			}
-			break;
-		case MSGKIND_DELETE:
-			{
-				appendPQExpBuffer(buffer, "DELETE TABLE %s.%s\n", msg->schemaname,msg->relname);
-				out_put_key_att(msg, buffer);
-				if(msg->has_key_or_old == false)
-				{
-					appendPQExpBuffer(buffer, "null old or key tuple\n");
-				}
-				else if (msg->natt == msg->oldtuple.natt)
-				{
-					appendPQExpBuffer(buffer, "old tuple:\n");
-					out_put_tuple(msg, buffer, &msg->oldtuple);
-				}
-				else
-				{
-					appendPQExpBuffer(buffer, "key tuple:\n");
-					out_put_tuple(msg, buffer, &msg->oldtuple);
-				}
-			}
-			break;
+				break;
 
-		default:
-			fprintf(stderr, "unknown action of type %c", msgkind);
+			default:
+				fprintf(stderr, "unknown action of type %c", msgkind);
 
+		}
 	}
 
 	out_put_tuple_to_sql(hander, msg, buffer);
