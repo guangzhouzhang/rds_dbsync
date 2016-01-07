@@ -1813,7 +1813,7 @@ init_hander(void)
 
 	hander = (Decoder_handler *)malloc(sizeof(Decoder_handler));
 	memset(hander, 0, sizeof(Decoder_handler));
-	hander->verbose = 1;
+	hander->verbose = 0;
 	hander->startpos = InvalidXLogRecPtr;
 	hander->outfd = -1;
 	
