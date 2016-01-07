@@ -37,7 +37,7 @@ static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer
 static size_t quote_literal_internal(char *dst, const char *src, size_t len);
 static void quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer);
 static void append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
-static void append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
+static void append_delete_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 static void append_update_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
 static bool is_key_column(ALI_PG_DECODE_MESSAGE *msg, char *colname);
 static bool append_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple, int i);
@@ -135,12 +135,6 @@ checktuple(ALI_PG_DECODE_MESSAGE *msg, int kind, Decode_TupleData *new_tuple, De
 		return 1;
 	}
 
-	if (kind == MSGKIND_DELETE && msg->k_natt == 0)
-	{
-		fprintf(stderr, "delete message does not contain key column info");
-		return 1;
-	}
-
 	if ((kind == MSGKIND_INSERT || kind == MSGKIND_UPDATE) && new_tuple->natt != msg->natt)
 	{
 		fprintf(stderr, "attnum %d not equal tuple attnum %d",  msg->natt, new_tuple->natt);
@@ -213,7 +207,7 @@ append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 }
 
 static void
-append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
+append_delete_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple)
 {
 	int i;
 	bool	first = true;
@@ -229,7 +223,7 @@ append_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQEx
 		{
 			bool is_key = false;
 
-			if (msg->k_natt)
+			if (msg->k_natt > 0)
 			{
 				is_key = is_key_column(msg, msg->attname[i]);
 				if (is_key == false)
@@ -331,7 +325,7 @@ append_update_statement_key_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAG
 		{
 			bool is_key = false;
 
-			if (msg->k_natt)
+			if (msg->k_natt > 0)
 			{
 				is_key = is_key_column(msg, msg->attname[i]);
 				if (is_key == false)
@@ -552,7 +546,7 @@ append_update_statement_key_not_change(Decoder_handler *hander, ALI_PG_DECODE_ME
 		{
 			bool is_key = false;
 
-			if (msg->k_natt)
+			if (msg->k_natt > 0)
 			{
 				is_key = is_key_column(msg, msg->attname[i]);
 				if (is_key == false)
@@ -584,7 +578,7 @@ append_update_statement_key_not_change(Decoder_handler *hander, ALI_PG_DECODE_ME
 		else
 		{
 			bool is_key = false;
-			if (msg->k_natt)
+			if (msg->k_natt > 0)
 			{
 				is_key = is_key_column(msg, msg->attname[i]);
 				if (is_key == true)
@@ -632,13 +626,13 @@ out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 	{
 		case MSGKIND_BEGIN:
 			{
-				appendPQExpBuffer(buffer, "begin;\n");
+				appendPQExpBuffer(buffer, "begin;");
 			}
 			break;
 
 		case MSGKIND_COMMIT:
 			{
-				appendPQExpBuffer(buffer, "commit;\n");
+				appendPQExpBuffer(buffer, "commit;");
 			}
 			break;
 
@@ -659,7 +653,7 @@ out_put_tuple_to_sql(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpB
 		case MSGKIND_DELETE:
 			{
 				appendPQExpBuffer(buffer, "DELETE FROM %s.%s ", msg->schemaname,msg->relname);
-				append_where_statement(hander, msg, buffer, old_tuple);
+				append_delete_where_statement(hander, msg, buffer, old_tuple);
 			}
 			break;
 
