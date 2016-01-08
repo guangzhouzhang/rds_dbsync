@@ -39,7 +39,7 @@
 	1 服务器端
 	在被订阅的服务器端,嵌入一个用于 decode 的插件--ali_decoding
 	该插件实现了流复制的自定义数据流格式,用户使用pg_create_logical_replication_slot函数创建 logical replication 时指定插件 ali_decoding 和逻辑 slot 名.
-	在客户端使用 START_REPLICATION 命令开启对应的刘复制传输后,服务器端会有一个backend 进程加载该插件(ali_decoding)开始向用户传输增量数据.
+	在客户端使用 START_REPLICATION 命令开启对应的流复制传输后,服务器端会有一个backend 进程加载该插件(ali_decoding)开始向用户传输增量数据.
 	
 	2 客户端
 	START_REPLICATION 命令需要指定对应的逻辑 slot 名和位点.
