@@ -303,7 +303,7 @@ finish_copy_origin_tx(PGconn *conn)
 	}
 
 	PQclear(res);
-	PQfinish(conn);
+	//PQfinish(conn);
 	return 0;
 }
 
@@ -322,7 +322,7 @@ finish_copy_target_tx(PGconn *conn)
 	}
 
 	PQclear(res);
-	PQfinish(conn);
+	//PQfinish(conn);
 	return 0;
 }
 
@@ -334,12 +334,14 @@ copy_table_data(void *arg)
 {
 	ThreadArg *args = (ThreadArg *)arg;
 	Thread_hd *hd = args->hd;
-	PGresult   *res;
+	PGresult   *res1;
+	PGresult   *res2;
 	int			bytes;
 	char	   *copybuf;
 	StringInfoData	query;
 	char *nspname;
 	char *relname;
+	Task_hd 	*curr = NULL;
 
 	PGconn *origin_conn = args->from;
 	PGconn *target_conn = args->to;
@@ -350,7 +352,6 @@ copy_table_data(void *arg)
 		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(origin_conn));
 		return NULL;
 	}
-	start_copy_origin_tx(origin_conn, hd->snapshot);
 	
 	target_conn = pglogical_connect(hd->desc, EXTENSION_NAME "_copy");
 	if (target_conn == NULL)
@@ -358,12 +359,10 @@ copy_table_data(void *arg)
 		fprintf(stderr, "init desc conn failed: %s", PQerrorMessage(target_conn));
 		return NULL;
 	}
-	start_copy_target_tx(target_conn);
 	
 	initStringInfo(&query);
 	while(1)
 	{
-		Task_hd		*curr = NULL;
 		int			nlist = 0;
 
 		pthread_mutex_lock(&hd->t_lock);
@@ -388,6 +387,9 @@ copy_table_data(void *arg)
 			break;
 		}
 
+		start_copy_origin_tx(origin_conn, hd->snapshot);
+		start_copy_target_tx(target_conn);
+
 		nspname = curr->schemaname;
 		relname = curr->relname;
 
@@ -399,8 +401,8 @@ copy_table_data(void *arg)
 											strlen(relname)));
 
 		/* Execute COPY TO. */
-		res = PQexec(origin_conn, query.data);
-		if (PQresultStatus(res) != PGRES_COPY_OUT)
+		res1 = PQexec(origin_conn, query.data);
+		if (PQresultStatus(res1) != PGRES_COPY_OUT)
 		{
 			fprintf(stderr,"table copy failed Query '%s': %s", 
 					query.data, PQerrorMessage(origin_conn));
@@ -416,8 +418,8 @@ copy_table_data(void *arg)
 											strlen(relname)));
 
 		/* Execute COPY FROM. */
-		res = PQexec(target_conn, query.data);
-		if (PQresultStatus(res) != PGRES_COPY_IN)
+		res2 = PQexec(target_conn, query.data);
+		if (PQresultStatus(res2) != PGRES_COPY_IN)
 		{
 			fprintf(stderr,"table copy failed Query '%s': %s", 
 				query.data, PQerrorMessage(target_conn));
@@ -455,7 +457,8 @@ copy_table_data(void *arg)
 		finish_copy_origin_tx(origin_conn);
 		finish_copy_target_tx(target_conn);
 		curr->complete = true;
-		PQclear(res);
+		PQclear(res1);
+		PQclear(res2);
 		resetStringInfo(&query);
 	}
 	
