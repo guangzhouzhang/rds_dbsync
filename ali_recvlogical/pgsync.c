@@ -116,6 +116,7 @@ typedef struct Thread_hd
 
 	int			ntask;
 	struct Task_hd		*task;
+	struct Task_hd		*l_task;
 	pthread_mutex_t	t_lock;
 
 	int			ntask_com;
@@ -353,15 +354,15 @@ copy_table_data(void *arg)
 		nlist = hd->ntask;
 		if (nlist == 1)
 		{
-		  curr = hd->task;
-		  hd->task = NULL;
+		  curr = hd->l_task;
+		  hd->l_task = NULL;
 		  hd->ntask = 0;
 		}
 		else if (nlist > 1)
 		{
-		  Task_hd	*tmp = hd->task->next;
-		  curr = hd->task;
-		  hd->task = tmp;
+		  Task_hd	*tmp = hd->l_task->next;
+		  curr = hd->l_task;
+		  hd->l_task = tmp;
 		  hd->ntask--;
 		}
 		pthread_mutex_unlock(&hd->t_lock);
@@ -617,11 +618,13 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		th_hd.task[i].relname = pstrdup(PQgetvalue(res, i, 1));
 		th_hd.task[i].count = 0;
 		th_hd.task[i].complete = false;
-		if (i == th_hd.ntask - 1)
+		if (i != th_hd.ntask - 1)
 		{
 			th_hd.task[i].next = &th_hd.task[i+1];
 		}
 	}
+
+	th_hd.l_task = &(th_hd.task[0]);
 
 	PQclear(res);
 
