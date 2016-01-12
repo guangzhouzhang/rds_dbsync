@@ -2,7 +2,7 @@
 
 ## 一:方案目的
 
-	通过PG实例的增量数据同步方案,解决PG在数据迁移中需要进行全量同步,需要长时间服务的问题.
+	通过PG实例的增量数据同步方案,解决PG在数据迁移中需要进行全量同步,需要长时间停服务的问题.
 	通过该方案,打通PG和其他数据产品间的数据通道,做到PG和其他数据产品和异构数据库间的实时的同步.
 
 ## 二:增量同步方案的技术背景
@@ -39,7 +39,7 @@
 	1 服务器端
 	在被订阅的服务器端,嵌入一个用于 decode 的插件--ali_decoding
 	该插件实现了流复制的自定义数据流格式,用户使用pg_create_logical_replication_slot函数创建 logical replication 时指定插件 ali_decoding 和逻辑 slot 名.
-	在客户端使用 START_REPLICATION 命令开启对应的刘复制传输后,服务器端会有一个backend 进程加载该插件(ali_decoding)开始向用户传输增量数据.
+	在客户端使用 START_REPLICATION 命令开启对应的流复制传输后,服务器端会有一个backend 进程加载该插件(ali_decoding)开始向用户传输增量数据.
 	
 	2 客户端
 	START_REPLICATION 命令需要指定对应的逻辑 slot 名和位点.
