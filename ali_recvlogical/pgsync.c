@@ -358,7 +358,7 @@ copy_table_data(void *arg)
 		fprintf(stderr, "init desc conn failed: %s", PQerrorMessage(target_conn));
 		return NULL;
 	}
-	start_copy_target_tx(origin_conn);
+	start_copy_target_tx(target_conn);
 	
 	initStringInfo(&query);
 	while(1)
@@ -410,9 +410,9 @@ copy_table_data(void *arg)
 		/* Build COPY FROM query. */
 		resetStringInfo(&query);
 		appendStringInfo(&query, "COPY %s.%s FROM stdin",
-						 PQescapeIdentifier(origin_conn, nspname,
+						 PQescapeIdentifier(target_conn, nspname,
 											strlen(nspname)),
-						 PQescapeIdentifier(origin_conn, relname,
+						 PQescapeIdentifier(target_conn, relname,
 											strlen(relname)));
 
 		/* Execute COPY FROM. */
@@ -420,7 +420,7 @@ copy_table_data(void *arg)
 		if (PQresultStatus(res) != PGRES_COPY_IN)
 		{
 			fprintf(stderr,"table copy failed Query '%s': %s", 
-				query.data, PQerrorMessage(origin_conn));
+				query.data, PQerrorMessage(target_conn));
 			goto exit;
 		}
 
