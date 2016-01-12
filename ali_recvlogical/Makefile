@@ -6,7 +6,7 @@ MODULE_big = ali_recvlogical
 MODULES = ali_recvlogical
 
 EXTENSION = ali_recvlogical
-OBJS = pg_logicaldecode.o pqformat.o stringinfo.o utils.o
+OBJS = pg_logicaldecode.o pqformat.o stringinfo.o utils.o pgsync.o
 
 PG_CPPFLAGS  = -DFRONTEND -I$(srcdir) -I$(libpq_srcdir)
 
@@ -15,5 +15,6 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 
-all: all-lib demo.o
+all: all-lib demo.o dbsync.o
 	$(CXX) $(CFLAGS) demo.o ali_recvlogical.so $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o demo
+	$(CXX) $(CFLAGS) dbsync.o ali_recvlogical.so $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o dbsync
