@@ -344,7 +344,8 @@ copy_table_data(void *arg)
 	
 	char *nspname;
 	char *relname;
-
+	
+	initStringInfo(&query);
 	while(1)
 	{
 		Task_hd		*curr = NULL;
@@ -376,7 +377,6 @@ copy_table_data(void *arg)
 		relname = curr->relname;
 
 		/* Build COPY TO query. */
-		initStringInfo(&query);
 		appendStringInfo(&query, "COPY %s.%s TO stdout",
 						 PQescapeIdentifier(origin_conn, nspname,
 											strlen(nspname)),
