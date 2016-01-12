@@ -338,12 +338,27 @@ copy_table_data(void *arg)
 	int			bytes;
 	char	   *copybuf;
 	StringInfoData	query;
+	char *nspname;
+	char *relname;
 
 	PGconn *origin_conn = args->from;
 	PGconn *target_conn = args->to;
+
+	origin_conn = pglogical_connect(hd->src, EXTENSION_NAME "_copy");
+	if (origin_conn == NULL)
+	{
+		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(origin_conn));
+		return NULL;
+	}
+	start_copy_origin_tx(origin_conn, hd->snapshot);
 	
-	char *nspname;
-	char *relname;
+	target_conn = pglogical_connect(hd->desc, EXTENSION_NAME "_copy");
+	if (target_conn == NULL)
+	{
+		fprintf(stderr, "init desc conn failed: %s", PQerrorMessage(target_conn));
+		return NULL;
+	}
+	start_copy_target_tx(origin_conn);
 	
 	initStringInfo(&query);
 	while(1)
@@ -635,7 +650,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		th_hd.th[i].count = 0;
 		th_hd.th[i].all_ok = false;
 
-		/* Connect to origin node. */
+		/*
 		th_hd.th[i].from = pglogical_connect(th_hd.src, EXTENSION_NAME "_copy");
 		if (th_hd.th[i].from == NULL)
 		{
@@ -644,7 +659,6 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		}
 		start_copy_origin_tx(th_hd.th[i].from, snapshot);
 		
-		/* Connect to target node. */
 		th_hd.th[i].to = pglogical_connect(th_hd.desc, EXTENSION_NAME "_copy");
 		if (th_hd.th[i].to == NULL)
 		{
@@ -652,7 +666,8 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 			return 1;
 		}
 		start_copy_target_tx(th_hd.th[i].to);
-		
+		*/
+
 		th_hd.th[i].hd = &th_hd;
 	}
 	pthread_mutex_init(&th_hd.t_lock, NULL);
