@@ -472,7 +472,7 @@ copy_table_data(void *arg)
 
 		GETTIMEOFDAY(&after);
 		DIFF_MSEC(&after, &before, elapsed_msec);
-		fprintf(stderr,"thread %d migrate task %d table %s,%s %ld rows complete, time cost %.3f ms\n",
+		fprintf(stderr,"thread %d migrate task %d table %s.%s %ld rows complete, time cost %.3f ms\n",
 						 args->id, curr->id, nspname, relname, curr->count, elapsed_msec);
 	}
 	
@@ -589,6 +589,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 //	XLogRecPtr	lsn = 0;
 	char	   *query = NULL;
 	long		s_count = 0;
+	long		t_count = 0;
 	bool		have_err = false;
 	TimevalStruct before,
 					after; 
@@ -705,7 +706,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	{
 		if(th_hd.th[i].all_ok)
 		{
-			s_count = th_hd.th[i].count;
+			s_count += th_hd.th[i].count;
 		}
 		else
 		{
@@ -713,7 +714,12 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		}
 	}
 
-	fprintf(stderr, "job migrate	row %ld\n", s_count);
+	for (i = 0; i < th_hd.ntask; i++)
+	{
+		t_count += th_hd.task[i].count;
+	}
+
+	fprintf(stderr, "job migrate row %ld task row %ld\n", s_count, t_count);
 	fprintf(stderr, "all time cost %.3f ms\n", elapsed_msec);
 	if (have_err)
 	{
