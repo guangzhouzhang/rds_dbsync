@@ -342,6 +342,9 @@ copy_table_data(void *arg)
 	char *nspname;
 	char *relname;
 	Task_hd 	*curr = NULL;
+	TimevalStruct before,
+					after; 
+	double		elapsed_msec = 0;
 
 	PGconn *origin_conn = args->from;
 	PGconn *target_conn = args->to;
@@ -365,6 +368,7 @@ copy_table_data(void *arg)
 	{
 		int			nlist = 0;
 
+		GETTIMEOFDAY(&before);
 		pthread_mutex_lock(&hd->t_lock);
 		nlist = hd->ntask;
 		if (nlist == 1)
@@ -380,6 +384,11 @@ copy_table_data(void *arg)
 		  hd->l_task = tmp;
 		  hd->ntask--;
 		}
+		else
+		{
+			curr = NULL;
+		}
+
 		pthread_mutex_unlock(&hd->t_lock);
 
 		if(curr == NULL)
@@ -460,6 +469,11 @@ copy_table_data(void *arg)
 		PQclear(res1);
 		PQclear(res2);
 		resetStringInfo(&query);
+
+		GETTIMEOFDAY(&after);
+		DIFF_MSEC(&after, &before, elapsed_msec);
+		fprintf(stderr,"thread %d migrate task %d table %s,%s %ld rows complete, time cost %.3f ms\n",
+						 args->id, curr->id, nspname, relname, curr->count, elapsed_msec);
 	}
 	
 	args->all_ok = true;
@@ -503,7 +517,7 @@ WaitThreadEnd(int n, Thread *th)
 	ThreadHandle *hanlde = NULL;
 	int i;
 
-	hanlde = (ThreadHandle *)malloc(sizeof(ThreadHandle));
+	hanlde = (ThreadHandle *)malloc(sizeof(ThreadHandle) * n);
 	for(i = 0; i < n; i++)
 	{
 		hanlde[i]=th[i].os_handle;
