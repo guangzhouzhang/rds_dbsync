@@ -180,7 +180,7 @@ extern bool sendFeedback(Decoder_handler *hander, int64 now, bool force, bool re
 extern int initialize_connection(Decoder_handler *hander);
 extern void disconnect(Decoder_handler *hander);
 extern int check_handler_parameters(Decoder_handler *hander);
-extern int create_replication_slot(Decoder_handler *hander);
+extern char *create_replication_slot(Decoder_handler *hander,XLogRecPtr *lsn, char *replication_slot);
 extern int drop_replication_slot(Decoder_handler *hander);
 extern int init_logfile(Decoder_handler *hander);
 extern int init_streaming(Decoder_handler *hander);

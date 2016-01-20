@@ -44,6 +44,7 @@ static bool append_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, P
 static void append_update_statement_key_not_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
 static void append_update_statement_key_change(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
 static void append_update_statement_full_row(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer);
+static XLogRecPtr pg_lsn_in(char *lsn);
 
 void
 out_put_key_att(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer)
@@ -1243,12 +1244,19 @@ drop_replication_slot(Decoder_handler *hander)
 	return 0;
 }
 
-int
-create_replication_slot(Decoder_handler *hander)
+char *
+create_replication_slot(Decoder_handler *hander,XLogRecPtr *lsn, char *replication_slot)
 {
 	PGresult *res = NULL;
 	uint32		hi,
 				lo;
+	char		   *snapshot;
+	char			*slsn;
+
+	if (replication_slot == NULL)
+	{
+		return NULL;
+	}
 
 	/*
 	 * create a replication slot
@@ -1260,10 +1268,10 @@ create_replication_slot(Decoder_handler *hander)
 		if (hander->verbose)
 			fprintf(stderr,
 					_("%s: creating replication slot \"%s\"\n"),
-					hander->progname, hander->replication_slot);
+					hander->progname, replication_slot);
 
 		snprintf(query, sizeof(query), "CREATE_REPLICATION_SLOT \"%s\" LOGICAL \"ali_decoding\"",
-				 hander->replication_slot);
+				 replication_slot);
 
 		res = PQexec(hander->conn, query);
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -1271,16 +1279,16 @@ create_replication_slot(Decoder_handler *hander)
 			fprintf(stderr, _("%s: could not send replication command \"%s\": %s"),
 					hander->progname, query, PQerrorMessage(hander->conn));
 			disconnect(hander);
-			return 1;
+			return NULL;
 		}
 
 		if (PQntuples(res) != 1 || PQnfields(res) != 4)
 		{
 			fprintf(stderr,
 					_("%s: could not create replication slot \"%s\": got %d rows and %d fields, expected %d rows and %d fields\n"),
-					hander->progname, hander->replication_slot, PQntuples(res), PQnfields(res), 1, 4);
+					hander->progname, replication_slot, PQntuples(res), PQnfields(res), 1, 4);
 			disconnect(hander);
-			return 1;
+			return NULL;
 		}
 
 		if (sscanf(PQgetvalue(res, 0, 1), "%X/%X", &hi, &lo) != 2)
@@ -1289,19 +1297,24 @@ create_replication_slot(Decoder_handler *hander)
 					_("%s: could not parse transaction log location \"%s\"\n"),
 					hander->progname, PQgetvalue(res, 0, 1));
 			disconnect(hander);
-			return 1;
+			return NULL;
 		}
 		hander->startpos = ((uint64) hi) << 32 | lo;
 
 		hander->replication_slot = strdup(PQgetvalue(res, 0, 0));
+
+		slsn = PQgetvalue(res, 0, 1);
+		*lsn = pg_lsn_in(slsn);
+		snapshot = pstrdup(PQgetvalue(res, 0, 2));
+		
 		PQclear(res);
 	}
 	else
 	{
-		return 1;
+		return NULL;
 	}
 
-	return 0;
+	return snapshot;
 }
 
 int
@@ -1876,5 +1889,45 @@ append_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer b
 	}
 
 	return isnull;
+}
+
+/*----------------------------------------------------------
+ * Formatting and conversion routines.
+ *---------------------------------------------------------*/
+
+static XLogRecPtr
+pg_lsn_in(char *lsn)
+{
+#define MAXPG_LSNCOMPONENT	8
+
+	char	   *str = lsn;
+	int			len1,
+				len2;
+	uint32		id,
+				off;
+	XLogRecPtr	result = 0;
+
+	/* Sanity check input format. */
+	len1 = strspn(str, "0123456789abcdefABCDEF");
+	if (len1 < 1 || len1 > MAXPG_LSNCOMPONENT || str[len1] != '/')
+	{
+		fprintf(stderr, "invalid input syntax for type pg_lsn: \"%s\"", str);
+
+		return result;
+	}
+	len2 = strspn(str + len1 + 1, "0123456789abcdefABCDEF");
+	if (len2 < 1 || len2 > MAXPG_LSNCOMPONENT || str[len1 + 1 + len2] != '\0')
+	{
+		fprintf(stderr,"invalid input syntax for type pg_lsn: \"%s\"", str);
+
+		return result;
+	}
+
+	/* Decode result. */
+	id = (uint32) strtoul(str, NULL, 16);
+	off = (uint32) strtoul(str + len1 + 1, NULL, 16);
+	result = ((uint64) id << 32) | off;
+
+	return result;
 }
 

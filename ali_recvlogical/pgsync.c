@@ -16,6 +16,7 @@
 #include "pqexpbuffer.h"
 #include "pgsync.h"
 #include "nodes/pg_list.h"
+#include "libpq/pqsignal.h"
 
 #include <time.h>
 
@@ -38,6 +39,9 @@ do { \
 	res = ((((int) ((T)->tv_sec - (U)->tv_sec)) * 1000000.0 + \
 	  ((int) ((T)->tv_usec - (U)->tv_usec))) / 1000.0); \
 } while(0)
+
+static void sigint_handler(int signum);
+
 #else
 
 #include <sys/types.h>
@@ -54,6 +58,7 @@ do { \
 	res = (double)(((T)->QuadPart - (U)->QuadPart)/(double)frq.QuadPart); \
 	res *= 1000; \
 } while(0)
+
 #endif
 
 #ifdef WIN32
@@ -111,7 +116,12 @@ typedef struct Thread_hd
 	
 	const char *snapshot;
 	char		*src;
+	int			src_version;
+	char		*slot_name;
+
 	char		*desc;
+	int			desc_version;
+	bool		desc_is_greenplum;
 	char		*local;
 
 	int			ntask;
@@ -135,114 +145,36 @@ typedef struct Task_hd
 	struct Task_hd *next;
 }Task_hd;
 
-static XLogRecPtr pg_lsn_in(char *lsn);
 static PGconn *pglogical_connect(const char *connstring, const char *connname);
-static int start_copy_origin_tx(PGconn *conn, const char *snapshot);
-static int start_copy_target_tx(PGconn *conn);
+static int start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version);
+static int start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum);
 static int finish_copy_origin_tx(PGconn *conn);
 static int finish_copy_target_tx(PGconn *conn);
 static void *copy_table_data(void *arg);
 static int ThreadCreate(Thread *th, void *(*start)(void *arg), void *arg);
 static bool WaitThreadEnd(int n, Thread *th);
 static void ThreadExit(int code);
-static PGconn *pglogical_connect_replica(const char *connstring, const char *connname);
+static int ExecuteSqlStatement(PGconn	   *conn, const char *query);
+static char *get_synchronized_snapshot(PGconn *conn);
+static int setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum);
+static bool is_slot_exists(PGconn *conn, char *slotname);
+static bool is_greenplum(PGconn *conn);
+static void *logical_decoding_thread(void *arg);
 
 
+static volatile bool time_to_abort = false;
+static volatile bool full_sync_complete = false;
 
-/*
- * Ensure slot exists.
- */
-char *
-ensure_replication_slot_snapshot(PGconn *origin_conn, char *slot_name,
-								 XLogRecPtr *lsn)
-{
-	PGresult	   *res;
-	StringInfoData	query;
-	char		   *snapshot;
-	char			*slsn;
-
-	initStringInfo(&query);
-
-	appendStringInfo(&query, "CREATE_REPLICATION_SLOT \"%s\" LOGICAL %s",
-					 slot_name, "ali_decoding");
-
-	res = PQexec(origin_conn, query.data);
-
-	/* TODO: check and handle already existing slot. */
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		fprintf(stderr, "could not send replication command \"%s\": status %s: %s\n",
-			 query.data,
-			 PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-
-		return NULL;
-	}
-
-	slsn = PQgetvalue(res, 0, 1);
-	*lsn = pg_lsn_in(slsn);
-	
-	snapshot = pstrdup(PQgetvalue(res, 0, 2));
-
-	PQclear(res);
-
-	return snapshot;
-}
-
-
-/*----------------------------------------------------------
- * Formatting and conversion routines.
- *---------------------------------------------------------*/
-
-XLogRecPtr
-pg_lsn_in(char *lsn)
-{
-#define MAXPG_LSNCOMPONENT	8
-
-	char	   *str = lsn;
-	int			len1,
-				len2;
-	uint32		id,
-				off;
-	XLogRecPtr	result = 0;
-
-	/* Sanity check input format. */
-	len1 = strspn(str, "0123456789abcdefABCDEF");
-	if (len1 < 1 || len1 > MAXPG_LSNCOMPONENT || str[len1] != '/')
-	{
-		fprintf(stderr, "invalid input syntax for type pg_lsn: \"%s\"", str);
-
-		return result;
-	}
-	len2 = strspn(str + len1 + 1, "0123456789abcdefABCDEF");
-	if (len2 < 1 || len2 > MAXPG_LSNCOMPONENT || str[len1 + 1 + len2] != '\0')
-	{
-		fprintf(stderr,"invalid input syntax for type pg_lsn: \"%s\"", str);
-
-		return result;
-	}
-
-	/* Decode result. */
-	id = (uint32) strtoul(str, NULL, 16);
-	off = (uint32) strtoul(str + len1 + 1, NULL, 16);
-	result = ((uint64) id << 32) | off;
-
-	return result;
-}
 
 /*
  * Transaction management for COPY.
  */
 static int
-start_copy_origin_tx(PGconn *conn, const char *snapshot)
+start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version)
 {
 	PGresult	   *res;
 	const char	   *setup_query =
-		"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n"
-		"SET DATESTYLE = ISO;\n"
-		"SET INTERVALSTYLE = POSTGRES;\n"
-		"SET extra_float_digits TO 3;\n"
-		"SET statement_timeout = 0;\n"
-		"SET lock_timeout = 0;\n";
+		"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n";
 	StringInfoData	query;
 
 	initStringInfo(&query);
@@ -260,21 +192,18 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 	}
 
 	PQclear(res);
+	
+	setup_connection(conn, pg_version, false);
+
 	return 0;
 }
 
 static int
-start_copy_target_tx(PGconn *conn)
+start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum)
 {
 	PGresult	   *res;
 	const char	   *setup_query =
-		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n"
-		"SET session_replication_role = 'replica';\n"
-		"SET DATESTYLE = ISO;\n"
-		"SET INTERVALSTYLE = POSTGRES;\n"
-		"SET extra_float_digits TO 3;\n"
-		"SET statement_timeout = 0;\n"
-		"SET lock_timeout = 0;\n";
+		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n";
 
 	res = PQexec(conn, setup_query);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
@@ -285,6 +214,9 @@ start_copy_target_tx(PGconn *conn)
 	}
 
 	PQclear(res);
+
+	setup_connection(conn, pg_version, is_greenplum);
+
 	return 0;
 }
 
@@ -396,8 +328,8 @@ copy_table_data(void *arg)
 			break;
 		}
 
-		start_copy_origin_tx(origin_conn, hd->snapshot);
-		start_copy_target_tx(target_conn);
+		start_copy_origin_tx(origin_conn, hd->snapshot, hd->src_version);
+		start_copy_target_tx(target_conn, hd->desc_version, hd->desc_is_greenplum);
 
 		nspname = curr->schemaname;
 		relname = curr->relname;
@@ -585,8 +517,10 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	Thread			*thread = NULL;
 	PGresult		*res = NULL;
 	PGconn		*origin_conn_repl;
+	PGconn		*desc_conn;
+	PGconn		*local_conn;
 	char		*snapshot = NULL;
-//	XLogRecPtr	lsn = 0;
+	XLogRecPtr	lsn = 0;
 	char	   *query = NULL;
 	long		s_count = 0;
 	long		t_count = 0;
@@ -594,6 +528,14 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	TimevalStruct before,
 					after; 
 	double		elapsed_msec = 0;
+	Decoder_handler *hander = NULL;
+	int	src_version = 0;
+	struct Thread decoder;
+	bool	replication_sync = false;
+
+#ifndef WIN32
+		signal(SIGINT, sigint_handler);
+#endif
 
 	GETTIMEOFDAY(&before);
 
@@ -603,14 +545,31 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	th_hd.desc = desc;
 	th_hd.local = local;
 
-	query = GET_NAPSHOT;
 	origin_conn_repl = pglogical_connect(src, EXTENSION_NAME "_main");
-
 	if (origin_conn_repl == NULL)
 	{
 		fprintf(stderr, "conn to src faild: %s", PQerrorMessage(origin_conn_repl));
 		return 1;
 	}
+
+	desc_conn = pglogical_connect(desc, EXTENSION_NAME "_main");
+	if (desc_conn == NULL)
+	{
+		fprintf(stderr, "init desc conn failed: %s", PQerrorMessage(desc_conn));
+		return 1;
+	}
+	th_hd.desc_version = PQserverVersion(desc_conn);
+	th_hd.desc_is_greenplum = is_greenplum(desc_conn);
+	PQfinish(desc_conn);
+
+	local_conn = pglogical_connect(local, EXTENSION_NAME "_main");
+	if (local_conn == NULL)
+	{
+		fprintf(stderr, "init local conn failed: %s", PQerrorMessage(local_conn));
+		return 1;
+	}
+	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS sync_sqls(id bigserial, sql text)");
+	PQfinish(local_conn);
 
 	res = PQexec(origin_conn_repl, "BEGIN");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
@@ -619,16 +578,46 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		return 1;
 	}
 
-	query = GET_NAPSHOT;
-	res = PQexec(origin_conn_repl, query);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	src_version = PQserverVersion(origin_conn_repl);
+	is_greenplum(origin_conn_repl);
+	th_hd.src_version = src_version;
+	if (src_version >= 90400)
 	{
-		fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
-		return 1;
+		if (!is_slot_exists(origin_conn_repl, EXTENSION_NAME "_slot"))
+		{
+			int rc = 0;
+
+			hander = init_hander();
+			hander->connection_string = src;
+			init_logfile(hander);
+			rc = initialize_connection(hander);
+			if(rc != 0)
+			{
+				fprintf(stderr, "create replication conn failed\n");
+				return 1;
+			}
+			hander->do_create_slot = true;
+			snapshot = create_replication_slot(hander, &lsn, EXTENSION_NAME "_slot");
+			if (snapshot == NULL)
+			{
+				fprintf(stderr, "create replication slot failed\n");
+				return 1;
+			}
+
+			th_hd.slot_name = hander->replication_slot;
+		}
+		else
+		{
+			th_hd.slot_name = EXTENSION_NAME "_slot";
+		}
+
+		replication_sync = true;
 	}
-	snapshot = pstrdup(PQgetvalue(res, 0, 0));
-	th_hd.snapshot = snapshot;
-	PQclear(res);
+	else if (src_version >= 90200)
+	{
+		snapshot = get_synchronized_snapshot(origin_conn_repl);
+		th_hd.snapshot = snapshot;
+	}
 
 	query = ALL_DB_TABLE_SQL;
 	res = PQexec(origin_conn_repl, query);
@@ -668,36 +657,26 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		th_hd.th[i].count = 0;
 		th_hd.th[i].all_ok = false;
 
-		/*
-		th_hd.th[i].from = pglogical_connect(th_hd.src, EXTENSION_NAME "_copy");
-		if (th_hd.th[i].from == NULL)
-		{
-			fprintf(stderr, "init src conn failed: %s", PQerrorMessage(th_hd.th[i].from));
-			return 1;
-		}
-		start_copy_origin_tx(th_hd.th[i].from, snapshot);
-		
-		th_hd.th[i].to = pglogical_connect(th_hd.desc, EXTENSION_NAME "_copy");
-		if (th_hd.th[i].to == NULL)
-		{
-			fprintf(stderr, "init desc conn failed: %s", PQerrorMessage(th_hd.th[i].to));
-			return 1;
-		}
-		start_copy_target_tx(th_hd.th[i].to);
-		*/
-
 		th_hd.th[i].hd = &th_hd;
 	}
 	pthread_mutex_init(&th_hd.t_lock, NULL);
-	//pthread_mutex_init(&th_hd.t_lock_com, NULL);
 
 	thread = (Thread *)palloc0(sizeof(Thread) * th_hd.nth);
 	for (i = 0; i < th_hd.nth; i++)
 	{
 		ThreadCreate(&thread[i], copy_table_data, &th_hd.th[i]);
 	}
+
+	if (replication_sync)
+	{
+		ThreadCreate(&decoder, logical_decoding_thread, &th_hd);
+	}
 	
 	WaitThreadEnd(th_hd.nth, thread);
+
+	full_sync_complete = true;
+
+	WaitThreadEnd(1, &decoder);
 
 	GETTIMEOFDAY(&after);
 	DIFF_MSEC(&after, &before, elapsed_msec);
@@ -729,30 +708,298 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	return 0;
 }
 
-/*
- * Make replication connection, ERROR on failure.
- */
-static PGconn *
-pglogical_connect_replica(const char *connstring, const char *connname)
+static int
+setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum)
 {
-	PGconn		   *conn;
-	StringInfoData	dsn;
+	char *dumpencoding = "UTF8";
 
-	initStringInfo(&dsn);
-	appendStringInfo(&dsn,
-					"%s replication=database fallback_application_name='%s'",
-					connstring, connname);
-
-	conn = PQconnectdb(dsn.data);
-	if (PQstatus(conn) != CONNECTION_OK)
+	/*
+	 * Set the client encoding if requested. If dumpencoding == NULL then
+	 * either it hasn't been requested or we're a cloned connection and then
+	 * this has already been set in CloneArchive according to the original
+	 * connection encoding.
+	 */
+	if (PQsetClientEncoding(conn, dumpencoding) < 0)
 	{
-		fprintf(stderr, "could not connect to the postgresql server in replication mode: %s dsn was: %s",
-						PQerrorMessage(conn), dsn.data);
-		return NULL;
+		fprintf(stderr, "invalid client encoding \"%s\" specified\n",
+					dumpencoding);
+		return 1;
 	}
 
-	
-	return conn;
+	/*
+	 * Get the active encoding and the standard_conforming_strings setting, so
+	 * we know how to escape strings.
+	 */
+	//AH->encoding = PQclientEncoding(conn);
+
+	//std_strings = PQparameterStatus(conn, "standard_conforming_strings");
+	//AH->std_strings = (std_strings && strcmp(std_strings, "on") == 0);
+
+	/* Set the datestyle to ISO to ensure the dump's portability */
+	ExecuteSqlStatement(conn, "SET DATESTYLE = ISO");
+
+	/* Likewise, avoid using sql_standard intervalstyle */
+	if (remoteVersion >= 80400)
+		ExecuteSqlStatement(conn, "SET INTERVALSTYLE = POSTGRES");
+
+	/*
+	 * If supported, set extra_float_digits so that we can dump float data
+	 * exactly (given correctly implemented float I/O code, anyway)
+	 */
+	if (remoteVersion >= 90000)
+		ExecuteSqlStatement(conn, "SET extra_float_digits TO 3");
+	else if (remoteVersion >= 70400)
+		ExecuteSqlStatement(conn, "SET extra_float_digits TO 2");
+
+	/*
+	 * If synchronized scanning is supported, disable it, to prevent
+	 * unpredictable changes in row ordering across a dump and reload.
+	 */
+	if (remoteVersion >= 80300 && !is_greenplum)
+		ExecuteSqlStatement(conn, "SET synchronize_seqscans TO off");
+
+	/*
+	 * Disable timeouts if supported.
+	 */
+	if (remoteVersion >= 70300)
+		ExecuteSqlStatement(conn, "SET statement_timeout = 0");
+	if (remoteVersion >= 90300)
+		ExecuteSqlStatement(conn, "SET lock_timeout = 0");
+
+	return 0;
 }
 
+static int
+ExecuteSqlStatement(PGconn *conn, const char *query)
+{
+	PGresult   *res;
+	int		rc = 0;
+
+	res = PQexec(conn, query);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		fprintf(stderr, "set %s failed: %s",
+						query, PQerrorMessage(conn));
+		rc = 1;
+	}
+	PQclear(res);
+
+	return rc;
+}
+
+static char *
+get_synchronized_snapshot(PGconn *conn)
+{
+	char	   *query = "SELECT pg_export_snapshot()";
+	char	   *result;
+	PGresult   *res;
+
+	res = PQexec(conn, query);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
+		return NULL;
+	}
+	result = pstrdup(PQgetvalue(res, 0, 0));
+	PQclear(res);
+
+	return result;
+}
+
+static bool
+is_slot_exists(PGconn *conn, char *slotname)
+{
+	PGresult   *res;
+	int			ntups;
+	bool	exist = false;
+	PQExpBuffer query;
+
+	query = createPQExpBuffer();
+	appendPQExpBuffer(query, "select slot_name from pg_replication_slots where slot_name = '%s';",
+							  slotname);
+
+	res = PQexec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		destroyPQExpBuffer(query);
+		return false;
+	}
+
+	/* Expecting a single result only */
+	ntups = PQntuples(res);
+	if (ntups == 1)
+	{
+		exist = true;
+	}
+
+	PQclear(res);
+	destroyPQExpBuffer(query);
+
+	return exist;
+}
+
+static bool
+is_greenplum(PGconn *conn)
+{
+	char	   *query = "select version from  version()";
+	bool	is_greenplum = false;
+	char	*result;
+	PGresult   *res;
+
+	res = PQexec(conn, query);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
+		return false;
+	}
+	result = PQgetvalue(res, 0, 0);
+	if (strstr(result, "Greenplum") != NULL)
+	{
+		is_greenplum = true;
+	}
+	
+	PQclear(res);
+
+	return is_greenplum;
+}
+
+#define RECONNECT_SLEEP_TIME 5
+
+/*
+ * COPY single table over wire.
+ */
+static void *
+logical_decoding_thread(void *arg)
+{
+	Thread_hd *hd = (Thread_hd *)arg;
+	Decoder_handler *hander;
+	int		rc = 0;
+	bool	init = false;
+	PGconn *local_conn;
+	PQExpBuffer buffer;
+    char    *stmtname = "insert_sqls";
+    Oid     type[1];
+	char *paramValues[1];
+	PGresult *res = NULL;
+
+    type[0] = 25;
+
+	buffer = createPQExpBuffer();
+
+	local_conn = pglogical_connect(hd->local, EXTENSION_NAME "_decoding");
+	if (local_conn == NULL)
+	{
+		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(local_conn));
+		goto exit;
+	}
+	
+	res = PQprepare(local_conn, stmtname, "INSERT INTO sync_sqls (sql) VALUES($1)", 1, type);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		fprintf(stderr, "create PQprepare failed: %s", PQerrorMessage(local_conn));
+		PQfinish(local_conn);
+		goto exit;
+	}
+	PQclear(res);
+
+	hander = init_hander();
+	hander->connection_string = hd->src;
+	init_logfile(hander);
+	rc = check_handler_parameters(hander);
+	if(rc != 0)
+	{
+		exit(1);
+	}
+
+	rc = initialize_connection(hander);
+	if(rc != 0)
+	{
+		exit(1);
+	}
+
+	hander->replication_slot = hd->slot_name;
+	init_streaming(hander);
+	init = true;
+
+	while (true)
+	{
+		ALI_PG_DECODE_MESSAGE *msg = NULL;
+
+		if (time_to_abort || full_sync_complete)
+		{
+			if (hander->copybuf != NULL)
+			{
+				PQfreemem(hander->copybuf);
+				hander->copybuf = NULL;
+			}
+			if (hander->conn)
+			{
+				PQfinish(hander->conn);
+				hander->conn = NULL;
+			}
+			if (local_conn)
+			{
+				PQfinish(local_conn);
+			}
+			break;
+		}
+
+		if (!init)
+		{
+			initialize_connection(hander);
+			init_streaming(hander);
+			init = true;
+		}
+
+		msg = exec_logical_decoder(hander, &time_to_abort);
+		if (msg != NULL)
+		{
+			out_put_tuple_to_sql(hander, msg, buffer);
+			paramValues[0] = buffer->data;
+			res = PQexecPrepared(local_conn, stmtname, 1, paramValues, NULL, NULL, 1);
+			if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			{
+				fprintf(stderr, "exec prepare INSERT INTO sync_sqls failed: %s", PQerrorMessage(local_conn));
+				time_to_abort = true;
+			}
+			else
+			{
+				hander->flushpos = hander->recvpos;
+			}
+
+			PQclear(res);
+			resetPQExpBuffer(buffer);
+		}
+		else
+		{
+			pg_sleep(RECONNECT_SLEEP_TIME * 1000000);
+			init = false;
+		}
+	}
+
+
+exit:
+
+	PQdescribePrepared(local_conn, stmtname);
+
+	destroyPQExpBuffer(buffer);
+
+	ThreadExit(0);
+	return NULL;
+}
+
+#ifndef WIN32
+
+/*
+ * When sigint is called, just tell the system to exit at the next possible
+ * moment.
+ */
+static void
+sigint_handler(int signum)
+{
+	time_to_abort = true;
+}
+
+#endif
 

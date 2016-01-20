@@ -23,9 +23,6 @@ extern		"C"
 
 #define EXTENSION_NAME "rds_logical_sync"
 
-
-extern char *ensure_replication_slot_snapshot(PGconn *origin_conn, char *slot_name,
-								 XLogRecPtr *lsn);
 extern int db_sync_main(char *src, char *desc, char *local, int nthread);
 
 #ifdef __cplusplus
