@@ -880,7 +880,7 @@ logical_decoding_thread(void *arg)
 	PQExpBuffer buffer;
     char    *stmtname = "insert_sqls";
     Oid     type[1];
-	char *paramValues[1];
+	const char *paramValues[1];
 	PGresult *res = NULL;
 
     type[0] = 25;

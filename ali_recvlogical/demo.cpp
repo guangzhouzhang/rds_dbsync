@@ -95,7 +95,7 @@ main(int argc, char **argv)
 
 	if (hander->do_create_slot)
 	{
-		if(create_replication_slot(hander, &lsn, "test") == NULL)
+		if(create_replication_slot(hander, &lsn, (char *)"test") == NULL)
 		{
 			exit(1);
 		}
