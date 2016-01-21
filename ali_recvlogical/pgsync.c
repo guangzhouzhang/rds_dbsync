@@ -160,11 +160,11 @@ static int setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum);
 static bool is_slot_exists(PGconn *conn, char *slotname);
 static bool is_greenplum(PGconn *conn);
 static void *logical_decoding_thread(void *arg);
+static void get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_xid);
+static void update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, bool apply_xid);
 
 
 static volatile bool time_to_abort = false;
-static volatile bool full_sync_complete = false;
-
 
 /*
  * Transaction management for COPY.
@@ -509,6 +509,8 @@ ThreadExit(int code)
 #define ALL_DB_TABLE_SQL "select n.nspname, c.relname from pg_class c, pg_namespace n where n.oid = c.relnamespace and c.relkind = 'r' and n.nspname not in ('pg_catalog','tiger','tiger_data','topology','postgis','information_schema') order by c.relpages desc;"
 #define GET_NAPSHOT "SELECT pg_export_snapshot()"
 
+#define TASK_ID "1"
+
 int 
 db_sync_main(char *src, char *desc, char *local, int nthread)
 {
@@ -521,7 +523,6 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	PGconn		*local_conn;
 	char		*snapshot = NULL;
 	XLogRecPtr	lsn = 0;
-	char	   *query = NULL;
 	long		s_count = 0;
 	long		t_count = 0;
 	bool		have_err = false;
@@ -532,6 +533,12 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	int	src_version = 0;
 	struct Thread decoder;
 	bool	replication_sync = false;
+	bool	need_full_sync = false;
+	char	*full_start = NULL;
+	char	*full_end = NULL;
+	char	*decoder_start = NULL;
+	char	*apply_xid = NULL;
+	int		ntask = 0;
 
 #ifndef WIN32
 		signal(SIGINT, sigint_handler);
@@ -569,13 +576,34 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		return 1;
 	}
 	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS sync_sqls(id bigserial, sql text)");
-	PQfinish(local_conn);
+	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS db_sync_status(id bigserial primary key, full_s_start timestamp DEFAULT NULL, full_s_end timestamp DEFAULT NULL, decoder_start timestamp DEFAULT NULL, apply_xid bigint DEFAULT NULL)");
+	ExecuteSqlStatement(local_conn, "insert into db_sync_status (id) values (" TASK_ID ");");
+	get_task_status(local_conn, &full_start, &full_end, &decoder_start, &apply_xid);
 
-	res = PQexec(origin_conn_repl, "BEGIN");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	if (full_start && full_end == NULL)
 	{
-		fprintf(stderr, "init open a tran failed: %s", PQresultErrorMessage(res));
+		fprintf(stderr, "full sync start %s, but not finish.truncate all data and restart dbsync\n", full_start);
 		return 1;
+	}
+	else if(full_start == NULL && full_end == NULL)
+	{
+		need_full_sync = true;
+		fprintf(stderr, "new dbsync task");
+	}
+	else if(full_start && full_end)
+	{
+		fprintf(stderr, "full sync start %s, end %s restart decoder sync\n", full_start, full_end);
+		need_full_sync = false;
+	}
+
+	if (decoder_start)
+	{
+		fprintf(stderr, "decoder sync start %s\n", decoder_start);
+	}
+	
+	if (apply_xid)
+	{
+		fprintf(stderr, "decoder apply xid %s\n", apply_xid);
 	}
 
 	src_version = PQserverVersion(origin_conn_repl);
@@ -583,6 +611,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	th_hd.src_version = src_version;
 	if (src_version >= 90400)
 	{
+		replication_sync = true;
 		if (!is_slot_exists(origin_conn_repl, EXTENSION_NAME "_slot"))
 		{
 			int rc = 0;
@@ -608,102 +637,149 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		}
 		else
 		{
+			fprintf(stderr, "decoder slot %s exist\n", EXTENSION_NAME "_slot");
 			th_hd.slot_name = EXTENSION_NAME "_slot";
 		}
-
-		replication_sync = true;
-	}
-	else if (src_version >= 90200)
-	{
-		snapshot = get_synchronized_snapshot(origin_conn_repl);
-		th_hd.snapshot = snapshot;
 	}
 
-	query = ALL_DB_TABLE_SQL;
-	res = PQexec(origin_conn_repl, query);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	if (need_full_sync)
 	{
-		fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
-		return 1;
-	}
+		const char	   *setup_query =
+			"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n";
+		PQExpBuffer	query;
+		
+		query = createPQExpBuffer();
+		appendPQExpBuffer(query, "%s", setup_query);
 
-	th_hd.ntask = PQntuples(res);
-	if (th_hd.ntask >= 1)
-	{
-		th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd) * th_hd.ntask);
-	}
-
-	for (i = 0; i < th_hd.ntask; i++)
-	{
-		th_hd.task[i].id = i;
-		th_hd.task[i].schemaname = pstrdup(PQgetvalue(res, i, 0));
-		th_hd.task[i].relname = pstrdup(PQgetvalue(res, i, 1));
-		th_hd.task[i].count = 0;
-		th_hd.task[i].complete = false;
-		if (i != th_hd.ntask - 1)
+		if (snapshot)
 		{
-			th_hd.task[i].next = &th_hd.task[i+1];
+			appendPQExpBuffer(query, "SET TRANSACTION SNAPSHOT '%s';\n", snapshot);
 		}
+
+		res = PQexec(origin_conn_repl, query->data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			fprintf(stderr, "init open a tran failed: %s", PQresultErrorMessage(res));
+			return 1;
+		}
+		resetPQExpBuffer(query);
+
+		if (snapshot == NULL)
+		{
+			if (src_version >= 90200)
+			{
+				snapshot = get_synchronized_snapshot(origin_conn_repl);
+				th_hd.snapshot = snapshot;
+			}
+		}
+
+		appendPQExpBuffer(query, ALL_DB_TABLE_SQL);
+		res = PQexec(origin_conn_repl, query->data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
+			return 1;
+		}
+
+		ntask = PQntuples(res);
+		th_hd.ntask = ntask;
+		if (th_hd.ntask >= 1)
+		{
+			th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd) * th_hd.ntask);
+		}
+
+		for (i = 0; i < th_hd.ntask; i++)
+		{
+			th_hd.task[i].id = i;
+			th_hd.task[i].schemaname = pstrdup(PQgetvalue(res, i, 0));
+			th_hd.task[i].relname = pstrdup(PQgetvalue(res, i, 1));
+			th_hd.task[i].count = 0;
+			th_hd.task[i].complete = false;
+			if (i != th_hd.ntask - 1)
+			{
+				th_hd.task[i].next = &th_hd.task[i+1];
+			}
+		}
+
+		th_hd.l_task = &(th_hd.task[0]);
+		PQclear(res);
+		
+		destroyPQExpBuffer(query);
+
+		th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
+		for (i = 0; i < th_hd.nth; i++)
+		{
+			th_hd.th[i].id = i;
+			th_hd.th[i].count = 0;
+			th_hd.th[i].all_ok = false;
+
+			th_hd.th[i].hd = &th_hd;
+		}
+		pthread_mutex_init(&th_hd.t_lock, NULL);
+
+		fprintf(stderr, "starting full sync");
+		if (snapshot)
+		{
+			fprintf(stderr, " with snapshot %s", snapshot);
+		}
+		fprintf(stderr, "\n");
+
+		thread = (Thread *)palloc0(sizeof(Thread) * th_hd.nth);
+		for (i = 0; i < th_hd.nth; i++)
+		{
+			ThreadCreate(&thread[i], copy_table_data, &th_hd.th[i]);
+		}
+
+		update_task_status(local_conn, true, false, false, false);
 	}
-
-	th_hd.l_task = &(th_hd.task[0]);
-
-	PQclear(res);
-
-	th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
-	for (i = 0; i < th_hd.nth; i++)
+	
+	if (replication_sync)
 	{
-		th_hd.th[i].id = i;
-		th_hd.th[i].count = 0;
-		th_hd.th[i].all_ok = false;
-
-		th_hd.th[i].hd = &th_hd;
+		fprintf(stderr, "starting logical decoding sync thread\n");
+		ThreadCreate(&decoder, logical_decoding_thread, &th_hd);
+		update_task_status(local_conn, false, false, true, false);
 	}
-	pthread_mutex_init(&th_hd.t_lock, NULL);
-
-	thread = (Thread *)palloc0(sizeof(Thread) * th_hd.nth);
-	for (i = 0; i < th_hd.nth; i++)
+		
+	if (need_full_sync)
 	{
-		ThreadCreate(&thread[i], copy_table_data, &th_hd.th[i]);
+		WaitThreadEnd(th_hd.nth, thread);
+		update_task_status(local_conn, false, true, false, false);
+
+		GETTIMEOFDAY(&after);
+		DIFF_MSEC(&after, &before, elapsed_msec);
+
+		for (i = 0; i < th_hd.nth; i++)
+		{
+			if(th_hd.th[i].all_ok)
+			{
+				s_count += th_hd.th[i].count;
+			}
+			else
+			{
+				have_err = true;
+			}
+		}
+
+		for (i = 0; i < ntask; i++)
+		{
+			t_count += th_hd.task[i].count;
+		}
+
+		fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
+		fprintf(stderr, "full sync time cost %.3f ms\n", elapsed_msec);
+		if (have_err)
+		{
+			fprintf(stderr, "migration process with errors\n");
+		}
 	}
 
 	if (replication_sync)
 	{
-		ThreadCreate(&decoder, logical_decoding_thread, &th_hd);
+		WaitThreadEnd(1, &decoder);
 	}
 	
-	WaitThreadEnd(th_hd.nth, thread);
-
-	full_sync_complete = true;
-
-	GETTIMEOFDAY(&after);
-	DIFF_MSEC(&after, &before, elapsed_msec);
-
-	for (i = 0; i < th_hd.nth; i++)
-	{
-		if(th_hd.th[i].all_ok)
-		{
-			s_count += th_hd.th[i].count;
-		}
-		else
-		{
-			have_err = true;;
-		}
-	}
-
-	for (i = 0; i < th_hd.ntask; i++)
-	{
-		t_count += th_hd.task[i].count;
-	}
-
-	fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
-	fprintf(stderr, "all time cost %.3f ms\n", elapsed_msec);
-	if (have_err)
-	{
-		fprintf(stderr, "migration process with errors\n");
-	}
-
-	WaitThreadEnd(1, &decoder);
+	PQfinish(origin_conn_repl);
+	PQfinish(local_conn);
 
 	return 0;
 }
@@ -1002,4 +1078,79 @@ sigint_handler(int signum)
 }
 
 #endif
+
+static void
+get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_xid)
+{
+	PGresult   *res;
+	char *query = "SELECT full_s_start , full_s_end, decoder_start, apply_xid FROM db_sync_status where id =" TASK_ID;
+
+	res = PQexec(conn, query);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		return;
+	}
+
+	if (PQntuples(res) != 1)
+	{
+		PQclear(res);
+		return;
+	}
+
+	if (!PQgetisnull(res, 0, 0))
+	{
+		*full_start = pstrdup(PQgetvalue(res, 0, 0));
+	}
+	
+	if (!PQgetisnull(res, 0, 1))
+	{
+		*full_end = pstrdup(PQgetvalue(res, 0, 1));
+	}
+	
+	if (!PQgetisnull(res, 0, 2))
+	{
+		*decoder_start = pstrdup(PQgetvalue(res, 0, 2));
+	}
+
+	if (!PQgetisnull(res, 0, 3))
+	{
+		*apply_xid = pstrdup(PQgetvalue(res, 0, 3));
+	}
+
+	PQclear(res);
+
+	return;
+}
+
+static void
+update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, bool apply_xid)
+{
+	char *query1 = "UPDATE db_sync_status SET full_s_start = now() WHERE id =" TASK_ID;
+	char *query2 = "UPDATE db_sync_status SET full_s_end = now() WHERE id =" TASK_ID;
+	char *query3 = "UPDATE db_sync_status SET decoder_start = now() WHERE id =" TASK_ID;
+	char *query4 = "UPDATE db_sync_status SET apply_xid = 0 WHERE id =" TASK_ID;
+
+	if (full_start)
+	{
+		ExecuteSqlStatement(conn, query1);
+	}
+	
+	if (full_end)
+	{
+		ExecuteSqlStatement(conn, query2);
+	}
+	
+	if (decoder_start)
+	{
+		ExecuteSqlStatement(conn, query3);
+	}
+	
+	if (apply_xid)
+	{
+		ExecuteSqlStatement(conn, query4);
+	}
+
+	return;
+}
 
