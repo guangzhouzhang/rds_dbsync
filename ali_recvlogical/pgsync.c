@@ -676,8 +676,6 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 
 	full_sync_complete = true;
 
-	WaitThreadEnd(1, &decoder);
-
 	GETTIMEOFDAY(&after);
 	DIFF_MSEC(&after, &before, elapsed_msec);
 
@@ -698,12 +696,14 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		t_count += th_hd.task[i].count;
 	}
 
-	fprintf(stderr, "job migrate row %ld task row %ld\n", s_count, t_count);
+	fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
 	fprintf(stderr, "all time cost %.3f ms\n", elapsed_msec);
 	if (have_err)
 	{
 		fprintf(stderr, "migration process with errors\n");
 	}
+
+	WaitThreadEnd(1, &decoder);
 
 	return 0;
 }
@@ -711,7 +711,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 static int
 setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum)
 {
-	char *dumpencoding = "UTF8";
+	char *dumpencoding = "utf8";
 
 	/*
 	 * Set the client encoding if requested. If dumpencoding == NULL then
@@ -893,7 +893,8 @@ logical_decoding_thread(void *arg)
 		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(local_conn));
 		goto exit;
 	}
-	
+	setup_connection(local_conn, 90400, false);
+
 	res = PQprepare(local_conn, stmtname, "INSERT INTO sync_sqls (sql) VALUES($1)", 1, type);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
@@ -926,7 +927,7 @@ logical_decoding_thread(void *arg)
 	{
 		ALI_PG_DECODE_MESSAGE *msg = NULL;
 
-		if (time_to_abort || full_sync_complete)
+		if (time_to_abort)
 		{
 			if (hander->copybuf != NULL)
 			{
@@ -940,6 +941,7 @@ logical_decoding_thread(void *arg)
 			}
 			if (local_conn)
 			{
+				PQdescribePrepared(local_conn, stmtname);
 				PQfinish(local_conn);
 			}
 			break;
@@ -980,8 +982,6 @@ logical_decoding_thread(void *arg)
 
 
 exit:
-
-	PQdescribePrepared(local_conn, stmtname);
 
 	destroyPQExpBuffer(buffer);
 
