@@ -98,6 +98,10 @@ typedef struct Thread
 #define SIGALRM				14
 #endif 
 
+#ifdef WIN32
+static int64 atoll(const char *nptr);
+#endif
+
 typedef struct ThreadArg
 {
 	int			id;
@@ -159,9 +163,11 @@ static char *get_synchronized_snapshot(PGconn *conn);
 static int setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum);
 static bool is_slot_exists(PGconn *conn, char *slotname);
 static bool is_greenplum(PGconn *conn);
-static void *logical_decoding_thread(void *arg);
-static void get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_xid);
-static void update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, bool apply_xid);
+static void *logical_decoding_receive_thread(void *arg);
+static void get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_id);
+static void update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, int64 apply_id);
+static void *logical_decoding_apply_thread(void *arg);
+static int64 get_apply_status(PGconn *conn);
 
 
 static volatile bool time_to_abort = false;
@@ -531,13 +537,13 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	double		elapsed_msec = 0;
 	Decoder_handler *hander = NULL;
 	int	src_version = 0;
-	struct Thread decoder;
+	struct Thread *decoder;
 	bool	replication_sync = false;
 	bool	need_full_sync = false;
 	char	*full_start = NULL;
 	char	*full_end = NULL;
 	char	*decoder_start = NULL;
-	char	*apply_xid = NULL;
+	char	*apply_id = NULL;
 	int		ntask = 0;
 
 #ifndef WIN32
@@ -576,9 +582,9 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		return 1;
 	}
 	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS sync_sqls(id bigserial, sql text)");
-	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS db_sync_status(id bigserial primary key, full_s_start timestamp DEFAULT NULL, full_s_end timestamp DEFAULT NULL, decoder_start timestamp DEFAULT NULL, apply_xid bigint DEFAULT NULL)");
+	ExecuteSqlStatement(local_conn, "CREATE TABLE IF NOT EXISTS db_sync_status(id bigserial primary key, full_s_start timestamp DEFAULT NULL, full_s_end timestamp DEFAULT NULL, decoder_start timestamp DEFAULT NULL, apply_id bigint DEFAULT NULL)");
 	ExecuteSqlStatement(local_conn, "insert into db_sync_status (id) values (" TASK_ID ");");
-	get_task_status(local_conn, &full_start, &full_end, &decoder_start, &apply_xid);
+	get_task_status(local_conn, &full_start, &full_end, &decoder_start, &apply_id);
 
 	if (full_start && full_end == NULL)
 	{
@@ -601,9 +607,9 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 		fprintf(stderr, "decoder sync start %s\n", decoder_start);
 	}
 	
-	if (apply_xid)
+	if (apply_id)
 	{
-		fprintf(stderr, "decoder apply xid %s\n", apply_xid);
+		fprintf(stderr, "decoder apply id %s\n", apply_id);
 	}
 
 	src_version = PQserverVersion(origin_conn_repl);
@@ -703,7 +709,6 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 
 		th_hd.l_task = &(th_hd.task[0]);
 		PQclear(res);
-		
 		destroyPQExpBuffer(query);
 
 		th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
@@ -730,20 +735,21 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 			ThreadCreate(&thread[i], copy_table_data, &th_hd.th[i]);
 		}
 
-		update_task_status(local_conn, true, false, false, false);
+		update_task_status(local_conn, true, false, false, -1);
 	}
 	
 	if (replication_sync)
 	{
+		decoder = (Thread *)palloc0(sizeof(Thread) * 2);
 		fprintf(stderr, "starting logical decoding sync thread\n");
-		ThreadCreate(&decoder, logical_decoding_thread, &th_hd);
-		update_task_status(local_conn, false, false, true, false);
+		ThreadCreate(&decoder[0], logical_decoding_receive_thread, &th_hd);
+		update_task_status(local_conn, false, false, true, -1);
 	}
 		
 	if (need_full_sync)
 	{
 		WaitThreadEnd(th_hd.nth, thread);
-		update_task_status(local_conn, false, true, false, false);
+		update_task_status(local_conn, false, true, false, -1);
 
 		GETTIMEOFDAY(&after);
 		DIFF_MSEC(&after, &before, elapsed_msec);
@@ -775,7 +781,9 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 
 	if (replication_sync)
 	{
-		WaitThreadEnd(1, &decoder);
+		ThreadCreate(&decoder[1], logical_decoding_apply_thread, &th_hd);
+		fprintf(stderr, "starting decoder apply thread\n");
+		WaitThreadEnd(2, decoder);
 	}
 	
 	PQfinish(origin_conn_repl);
@@ -946,7 +954,7 @@ is_greenplum(PGconn *conn)
  * COPY single table over wire.
  */
 static void *
-logical_decoding_thread(void *arg)
+logical_decoding_receive_thread(void *arg)
 {
 	Thread_hd *hd = (Thread_hd *)arg;
 	Decoder_handler *hander;
@@ -1080,10 +1088,10 @@ sigint_handler(int signum)
 #endif
 
 static void
-get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_xid)
+get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_id)
 {
 	PGresult   *res;
-	char *query = "SELECT full_s_start , full_s_end, decoder_start, apply_xid FROM db_sync_status where id =" TASK_ID;
+	char *query = "SELECT full_s_start , full_s_end, decoder_start, apply_id FROM db_sync_status where id =" TASK_ID;
 
 	res = PQexec(conn, query);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -1115,7 +1123,7 @@ get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder
 
 	if (!PQgetisnull(res, 0, 3))
 	{
-		*apply_xid = pstrdup(PQgetvalue(res, 0, 3));
+		*apply_id = pstrdup(PQgetvalue(res, 0, 3));
 	}
 
 	PQclear(res);
@@ -1124,33 +1132,249 @@ get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder
 }
 
 static void
-update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, bool apply_xid)
+update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, int64 apply_id)
 {
-	char *query1 = "UPDATE db_sync_status SET full_s_start = now() WHERE id =" TASK_ID;
-	char *query2 = "UPDATE db_sync_status SET full_s_end = now() WHERE id =" TASK_ID;
-	char *query3 = "UPDATE db_sync_status SET decoder_start = now() WHERE id =" TASK_ID;
-	char *query4 = "UPDATE db_sync_status SET apply_xid = 0 WHERE id =" TASK_ID;
+	PQExpBuffer query;
+
+	query = createPQExpBuffer();
 
 	if (full_start)
 	{
-		ExecuteSqlStatement(conn, query1);
+		appendPQExpBuffer(query, "UPDATE db_sync_status SET full_s_start = now() WHERE id = %s",
+							  TASK_ID);
+		ExecuteSqlStatement(conn, query->data);
 	}
 	
 	if (full_end)
 	{
-		ExecuteSqlStatement(conn, query2);
+		appendPQExpBuffer(query, "UPDATE db_sync_status SET full_s_end = now() WHERE id = %s",
+							  TASK_ID);
+		ExecuteSqlStatement(conn, query->data);
 	}
 	
 	if (decoder_start)
 	{
-		ExecuteSqlStatement(conn, query3);
+		appendPQExpBuffer(query, "UPDATE db_sync_status SET decoder_start = now() WHERE id = %s",
+							  TASK_ID);
+		ExecuteSqlStatement(conn, query->data);
 	}
 	
-	if (apply_xid)
+	if (apply_id >= 0)
 	{
-		ExecuteSqlStatement(conn, query4);
+		appendPQExpBuffer(query, "UPDATE db_sync_status SET apply_id = " INT64_FORMAT " WHERE id = %s",
+							  apply_id, TASK_ID);
+		ExecuteSqlStatement(conn, query->data);
 	}
+
+	destroyPQExpBuffer(query);
 
 	return;
 }
+
+/*
+ * COPY single table over wire.
+ */
+static void *
+logical_decoding_apply_thread(void *arg)
+{
+	Thread_hd *hd = (Thread_hd *)arg;
+	PGconn *local_conn;
+	PGconn *local_conn_u;
+	PGconn *apply_conn;
+    Oid     type[1];
+	PGresult *resreader = NULL;
+	int		pgversion;
+	bool	is_gp = false;
+	int64	apply_id = 0;
+
+    type[0] = 25;
+
+	local_conn = pglogical_connect(hd->local, EXTENSION_NAME "apply_reader");
+	if (local_conn == NULL)
+	{
+		fprintf(stderr, "decoding applyer init src conn failed: %s", PQerrorMessage(local_conn));
+		goto exit;
+	}
+	setup_connection(local_conn, 90400, false);
+	apply_id = get_apply_status(local_conn);
+	if (apply_id == -1)
+	{
+		goto exit;
+	}
+
+	local_conn_u = pglogical_connect(hd->local, EXTENSION_NAME "apply_update_status");
+	if (local_conn_u == NULL)
+	{
+		fprintf(stderr, "decoding applyer init src conn failed: %s", PQerrorMessage(local_conn_u));
+		goto exit;
+	}
+	setup_connection(local_conn_u, 90400, false);
+
+	apply_conn = pglogical_connect(hd->desc, EXTENSION_NAME "_decoding_apply");
+	if (apply_conn == NULL)
+	{
+		fprintf(stderr, "decoding_apply init desc conn failed: %s", PQerrorMessage(apply_conn));
+		goto exit;
+	}
+	pgversion = PQserverVersion(apply_conn);
+	is_gp = is_greenplum(apply_conn);
+	setup_connection(apply_conn, pgversion, is_gp);
+
+	while (!time_to_abort)
+	{
+		const char *paramValues[1];
+		char	*ssql;
+		char	tmp[16];
+		int		n_commit = 0;
+
+		sprintf(tmp, INT64_FORMAT, apply_id);
+		paramValues[0] = tmp;
+
+        resreader = PQexec(local_conn, "BEGIN");
+        if (PQresultStatus(resreader) != PGRES_COMMAND_OK)
+        {
+                fprintf(stderr, "BEGIN command failed: %s\n", PQerrorMessage(local_conn));
+                PQclear(resreader);
+                goto exit;
+        }
+		PQclear(resreader);
+
+        resreader = PQexecParams(local_conn,
+           "DECLARE ali_decoder_cursor CURSOR FOR select id, sql from sync_sqls where id > $1 order by id",
+           1,
+           NULL,
+           paramValues,
+           NULL,
+           NULL,
+           1);
+
+        if (PQresultStatus(resreader) != PGRES_COMMAND_OK)
+        {
+			fprintf(stderr, "DECLARE CURSOR command failed: %s\n", PQerrorMessage(local_conn));
+			PQclear(resreader);
+			goto exit;
+        }
+        PQclear(resreader);
+
+		while(!time_to_abort)
+		{
+			bool iscommit = false;
+
+			resreader = PQexec(local_conn, "FETCH FROM ali_decoder_cursor");
+			if (PQresultStatus(resreader) != PGRES_TUPLES_OK)
+			{
+					fprintf(stderr, "FETCH ALL command didn't return tuples properly: %s\n", PQerrorMessage(local_conn));
+					PQclear(resreader);
+			}
+
+			if (PQntuples(resreader) == 0)
+			{
+				PQclear(resreader);
+				resreader = PQexec(local_conn, "CLOSE ali_decoder_cursor");
+				PQclear(resreader);
+				resreader = PQexec(local_conn, "END");
+				PQclear(resreader);
+
+				if (n_commit != 0)
+				{
+					n_commit = 0;
+					update_task_status(local_conn_u, false, false, false, apply_id);
+				}
+
+				pg_sleep(1000000);
+				break;
+			}
+
+			ssql = PQgetvalue(resreader, 0, 1);
+			if (strcmp(ssql,"commit;") == 0)
+			{
+				iscommit = true;
+			}
+
+			/*applyres = PQexec(apply_conn, ssql);
+			if (PQresultStatus(applyres) != PGRES_COMMAND_OK)
+			{				
+				fprintf(stderr, "exec apply sql %s failed: %s\n", ssql, PQerrorMessage(apply_conn));
+				PQclear(resreader);
+				goto exit;
+			}*/
+
+			if (iscommit)
+			{
+				n_commit++;
+				apply_id = atoll(PQgetvalue(resreader, 0, 0));
+				if(n_commit == 5)
+				{
+					n_commit = 0;
+					update_task_status(local_conn_u, false, false, false, apply_id);
+				}
+			}
+			PQclear(resreader);
+			//PQclear(applyres);
+		}
+	}
+
+exit:
+
+	if (local_conn)
+	{
+		PQfinish(local_conn);
+	}
+
+	if (local_conn_u)
+	{
+		PQfinish(local_conn_u);
+	}
+
+	if (apply_conn)
+	{
+		PQfinish(apply_conn);
+	}
+
+	time_to_abort = true;
+
+	ThreadExit(0);
+	return NULL;
+}
+
+static int64
+get_apply_status(PGconn *conn)
+{
+	PGresult   *res;
+	char *query = "SELECT apply_id FROM db_sync_status where id =" TASK_ID;
+	int64	rc = 0;
+
+	res = PQexec(conn, query);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		return -1;
+	}
+
+	if (PQntuples(res) != 1)
+	{
+		PQclear(res);
+		return -1;
+	}
+
+	if (!PQgetisnull(res, 0, 0))
+	{
+		char	*tmp = PQgetvalue(res, 0, 0);
+		rc = atoll(tmp);
+	}
+
+	PQclear(res);
+
+	return rc;
+}
+
+
+#ifdef WIN32
+
+static int64 atoll(const char *nptr)
+{
+	return atol(nptr);
+}
+
+#endif
 
