@@ -1235,7 +1235,6 @@ logical_decoding_apply_thread(void *arg)
 		char	tmp[16];
 		int		n_commit = 0;
 		int		sqltype = SQL_TYPE_BEGIN;
-		bool	last_error_with_dukey = false;
 
 		sprintf(tmp, INT64_FORMAT, apply_id);
 		paramValues[0] = tmp;
@@ -1319,8 +1318,7 @@ logical_decoding_apply_thread(void *arg)
 				int		errcode = 0;
 				fprintf(stderr, "exec apply sql %s failed: %s\n", ssql, PQerrorMessage(apply_conn));
 				errcode = atoi(sqlstate);
-				if (errcode == ERROR_DUPLICATE_KEY &&
-					(sqltype == SQL_TYPE_FIRST_STATMENT || last_error_with_dukey))
+				if (errcode == ERROR_DUPLICATE_KEY && sqltype == SQL_TYPE_FIRST_STATMENT)
 				{
 					PQclear(applyres);
 					applyres = PQexec(apply_conn, "END");
@@ -1334,7 +1332,7 @@ logical_decoding_apply_thread(void *arg)
 					{
 						goto exit;
 					}
-					last_error_with_dukey = true;
+					sqltype = SQL_TYPE_BEGIN;
 				}
 				else
 				{
@@ -1342,10 +1340,6 @@ logical_decoding_apply_thread(void *arg)
 					PQclear(applyres);
 					goto exit;
 				}
-			}
-			else
-			{
-				last_error_with_dukey = false;
 			}
 
 			if (sqltype == SQL_TYPE_COMMIT)
