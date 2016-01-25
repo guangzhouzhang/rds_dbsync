@@ -537,7 +537,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	double		elapsed_msec = 0;
 	Decoder_handler *hander = NULL;
 	int	src_version = 0;
-	struct Thread *decoder;
+	struct Thread *decoder = NULL;
 	bool	replication_sync = false;
 	bool	need_full_sync = false;
 	char	*full_start = NULL;
@@ -1171,6 +1171,13 @@ update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_st
 	return;
 }
 
+#define ERROR_DUPLICATE_KEY		23505
+
+#define SQL_TYPE_BEGIN				0
+#define SQL_TYPE_COMMIT				1
+#define SQL_TYPE_FIRST_STATMENT		2
+#define SQL_TYPE_OTHER_STATMENT		3
+
 /*
  * COPY single table over wire.
  */
@@ -1178,11 +1185,12 @@ static void *
 logical_decoding_apply_thread(void *arg)
 {
 	Thread_hd *hd = (Thread_hd *)arg;
-	PGconn *local_conn;
-	PGconn *local_conn_u;
-	PGconn *apply_conn;
+	PGconn *local_conn = NULL;
+	PGconn *local_conn_u = NULL;
+	PGconn *apply_conn = NULL;
     Oid     type[1];
 	PGresult *resreader = NULL;
+	PGresult *applyres = NULL;
 	int		pgversion;
 	bool	is_gp = false;
 	int64	apply_id = 0;
@@ -1226,6 +1234,8 @@ logical_decoding_apply_thread(void *arg)
 		char	*ssql;
 		char	tmp[16];
 		int		n_commit = 0;
+		int		sqltype = SQL_TYPE_BEGIN;
+		bool	last_error_with_dukey = false;
 
 		sprintf(tmp, INT64_FORMAT, apply_id);
 		paramValues[0] = tmp;
@@ -1258,8 +1268,6 @@ logical_decoding_apply_thread(void *arg)
 
 		while(!time_to_abort)
 		{
-			bool iscommit = false;
-
 			resreader = PQexec(local_conn, "FETCH FROM ali_decoder_cursor");
 			if (PQresultStatus(resreader) != PGRES_TUPLES_OK)
 			{
@@ -1286,20 +1294,61 @@ logical_decoding_apply_thread(void *arg)
 			}
 
 			ssql = PQgetvalue(resreader, 0, 1);
-			if (strcmp(ssql,"commit;") == 0)
+
+			if(strcmp(ssql,"begin;") == 0)
 			{
-				iscommit = true;
+				sqltype = SQL_TYPE_BEGIN;
+			}
+			else if (strcmp(ssql,"commit;") == 0)
+			{
+				sqltype = SQL_TYPE_COMMIT;
+			}
+			else if(sqltype == SQL_TYPE_BEGIN)
+			{
+				sqltype = SQL_TYPE_FIRST_STATMENT;
+			}
+			else
+			{
+				sqltype = SQL_TYPE_OTHER_STATMENT;
 			}
 
-			/*applyres = PQexec(apply_conn, ssql);
+			applyres = PQexec(apply_conn, ssql);
 			if (PQresultStatus(applyres) != PGRES_COMMAND_OK)
-			{				
+			{
+				char	*sqlstate = PQresultErrorField(applyres, PG_DIAG_SQLSTATE);
+				int		errcode = 0;
 				fprintf(stderr, "exec apply sql %s failed: %s\n", ssql, PQerrorMessage(apply_conn));
-				PQclear(resreader);
-				goto exit;
-			}*/
+				errcode = atoi(sqlstate);
+				if (errcode == ERROR_DUPLICATE_KEY &&
+					(sqltype == SQL_TYPE_FIRST_STATMENT || last_error_with_dukey))
+				{
+					PQclear(applyres);
+					applyres = PQexec(apply_conn, "END");
+					if (PQresultStatus(applyres) != PGRES_COMMAND_OK)
+					{
+						goto exit;
+					}
+					PQclear(applyres);
+					applyres = PQexec(apply_conn, "BEGIN");
+					if (PQresultStatus(applyres) != PGRES_COMMAND_OK)
+					{
+						goto exit;
+					}
+					last_error_with_dukey = true;
+				}
+				else
+				{
+					PQclear(resreader);
+					PQclear(applyres);
+					goto exit;
+				}
+			}
+			else
+			{
+				last_error_with_dukey = false;
+			}
 
-			if (iscommit)
+			if (sqltype == SQL_TYPE_COMMIT)
 			{
 				n_commit++;
 				apply_id = atoll(PQgetvalue(resreader, 0, 0));
@@ -1310,7 +1359,7 @@ logical_decoding_apply_thread(void *arg)
 				}
 			}
 			PQclear(resreader);
-			//PQclear(applyres);
+			PQclear(applyres);
 		}
 	}
 
