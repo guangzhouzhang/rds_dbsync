@@ -1059,8 +1059,7 @@ sendFeedback(Decoder_handler *hander, int64 now, bool force, bool replyRequested
 		hander->last_recvpos == hander->recvpos)
 		return true;
 
-	if (hander->verbose)
-		fprintf(stderr,"%s: confirming recv up to %X/%X, flush to %X/%X (slot %s)\n",
+	fprintf(stderr,"%s: confirming recv up to %X/%X, flush to %X/%X (slot %s)\n",
 				hander->progname,
 				(uint32) (hander->recvpos >> 32), (uint32) hander->recvpos,
 				(uint32) (hander->flushpos >> 32), (uint32) hander->flushpos,
@@ -1081,7 +1080,6 @@ sendFeedback(Decoder_handler *hander, int64 now, bool force, bool replyRequested
 
 	hander->startpos = hander->recvpos;
 	hander->last_recvpos= hander->recvpos;
-	hander->last_flushpos = hander->flushpos;
 
 	if (PQputCopyData(hander->conn, replybuf, len) <= 0 || PQflush(hander->conn))
 	{
@@ -1363,11 +1361,7 @@ init_streaming(Decoder_handler *hander)
 		/* Error message already written in GetConnection() */
 		return 1;
 
-	/*
-	 * Start the replication
-	 */
-	if (hander->verbose)
-		fprintf(stderr,
+	fprintf(stderr,
 				_("%s: starting log streaming at %X/%X (slot %s)\n"),
 				hander->progname, (uint32) (hander->startpos >> 32), (uint32) hander->startpos,
 				hander->replication_slot);
@@ -1582,6 +1576,7 @@ redo:
 			if (replyRequested)
 			{
 				now = feGetCurrentTimestamp();
+				fprintf(stderr, _("server requested an immediate reply %s\n"), timestamptz_to_str(now));
 				if (!sendFeedback(hander, now, true, false))
 					goto error;
 				hander->last_status = now;
@@ -1815,26 +1810,21 @@ Decoder_handler *
 init_hander(void)
 {
 	Decoder_handler *hander = NULL;
-	uint32		hi = 0;
-	uint32		lo = 0;
 
 	hander = (Decoder_handler *)malloc(sizeof(Decoder_handler));
 	memset(hander, 0, sizeof(Decoder_handler));
 	hander->verbose = 0;
-	hander->startpos = InvalidXLogRecPtr;
 	hander->outfd = -1;
 	
 	hander->recvpos = InvalidXLogRecPtr;
 	hander->flushpos= InvalidXLogRecPtr;
 	hander->startpos= InvalidXLogRecPtr;
 
-	hander->standby_message_timeout = 10 * 1000;
+	hander->standby_message_timeout = 1000;
 	hander->last_status = -1;
 	hander->progname = (char *)"pg_recvlogical";
-	
 
 	hander->outfile = (char *)"-";
-	hander->startpos = ((uint64) hi) << 32 | lo;
 	hander->replication_slot = (char *)"rds_logical_sync_slot";
 	hander->do_create_slot = false;
 	hander->do_start_slot = true;

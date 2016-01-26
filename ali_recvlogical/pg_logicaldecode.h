@@ -97,12 +97,8 @@ typedef struct Decoder_handler
 	XLogRecPtr startpos;
 		
 	XLogRecPtr recvpos;
-//	XLogRecPtr writepos;
 	XLogRecPtr flushpos;
-	
 	XLogRecPtr last_recvpos;
-//	XLogRecPtr last_writepos;
-	XLogRecPtr last_flushpos;
 
 	ALI_PG_DECODE_MESSAGE msg;
 	

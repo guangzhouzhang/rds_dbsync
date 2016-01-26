@@ -1293,7 +1293,6 @@ logical_decoding_apply_thread(void *arg)
 			}
 
 			ssql = PQgetvalue(resreader, 0, 1);
-
 			if(strcmp(ssql,"begin;") == 0)
 			{
 				sqltype = SQL_TYPE_BEGIN;
@@ -1316,7 +1315,7 @@ logical_decoding_apply_thread(void *arg)
 			{
 				char	*sqlstate = PQresultErrorField(applyres, PG_DIAG_SQLSTATE);
 				int		errcode = 0;
-				fprintf(stderr, "exec apply sql %s failed: %s\n", ssql, PQerrorMessage(apply_conn));
+				fprintf(stderr, "exec apply id %s, sql %s failed: %s\n", PQgetvalue(resreader, 0, 0), ssql, PQerrorMessage(apply_conn));
 				errcode = atoi(sqlstate);
 				if (errcode == ERROR_DUPLICATE_KEY && sqltype == SQL_TYPE_FIRST_STATMENT)
 				{
