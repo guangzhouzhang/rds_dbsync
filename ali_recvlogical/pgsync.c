@@ -169,12 +169,36 @@ static void update_task_status(PGconn *conn, bool full_start, bool full_end, boo
 static void *logical_decoding_apply_thread(void *arg);
 static int64 get_apply_status(PGconn *conn);
 
-
 static volatile bool time_to_abort = false;
 
-/*
- * Transaction management for COPY.
- */
+
+#define ERROR_DUPLICATE_KEY		23505
+
+#define SQL_TYPE_BEGIN				0
+#define SQL_TYPE_COMMIT				1
+#define SQL_TYPE_FIRST_STATMENT		2
+#define SQL_TYPE_OTHER_STATMENT		3
+
+#define RECONNECT_SLEEP_TIME 5
+
+#define ALL_DB_TABLE_SQL "select n.nspname, c.relname from pg_class c, pg_namespace n where n.oid = c.relnamespace and c.relkind = 'r' and n.nspname not in ('pg_catalog','tiger','tiger_data','topology','postgis','information_schema') order by c.relpages desc;"
+#define GET_NAPSHOT "SELECT pg_export_snapshot()"
+
+#define TASK_ID "1"
+
+#ifndef WIN32
+static void
+sigint_handler(int signum)
+{
+	time_to_abort = true;
+}
+#else
+static int64 atoll(const char *nptr)
+{
+	return atol(nptr);
+}
+#endif
+
 static int
 start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version)
 {
@@ -511,11 +535,6 @@ ThreadExit(int code)
 	return;
 #endif
 }
-
-#define ALL_DB_TABLE_SQL "select n.nspname, c.relname from pg_class c, pg_namespace n where n.oid = c.relnamespace and c.relkind = 'r' and n.nspname not in ('pg_catalog','tiger','tiger_data','topology','postgis','information_schema') order by c.relpages desc;"
-#define GET_NAPSHOT "SELECT pg_export_snapshot()"
-
-#define TASK_ID "1"
 
 int 
 db_sync_main(char *src, char *desc, char *local, int nthread)
@@ -948,145 +967,6 @@ is_greenplum(PGconn *conn)
 	return is_greenplum;
 }
 
-#define RECONNECT_SLEEP_TIME 5
-
-/*
- * COPY single table over wire.
- */
-static void *
-logical_decoding_receive_thread(void *arg)
-{
-	Thread_hd *hd = (Thread_hd *)arg;
-	Decoder_handler *hander;
-	int		rc = 0;
-	bool	init = false;
-	PGconn *local_conn;
-	PQExpBuffer buffer;
-    char    *stmtname = "insert_sqls";
-    Oid     type[1];
-	const char *paramValues[1];
-	PGresult *res = NULL;
-
-    type[0] = 25;
-
-	buffer = createPQExpBuffer();
-
-	local_conn = pglogical_connect(hd->local, EXTENSION_NAME "_decoding");
-	if (local_conn == NULL)
-	{
-		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(local_conn));
-		goto exit;
-	}
-	setup_connection(local_conn, 90400, false);
-
-	res = PQprepare(local_conn, stmtname, "INSERT INTO sync_sqls (sql) VALUES($1)", 1, type);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "create PQprepare failed: %s", PQerrorMessage(local_conn));
-		PQfinish(local_conn);
-		goto exit;
-	}
-	PQclear(res);
-
-	hander = init_hander();
-	hander->connection_string = hd->src;
-	init_logfile(hander);
-	rc = check_handler_parameters(hander);
-	if(rc != 0)
-	{
-		exit(1);
-	}
-
-	rc = initialize_connection(hander);
-	if(rc != 0)
-	{
-		exit(1);
-	}
-
-	hander->replication_slot = hd->slot_name;
-	init_streaming(hander);
-	init = true;
-
-	while (true)
-	{
-		ALI_PG_DECODE_MESSAGE *msg = NULL;
-
-		if (time_to_abort)
-		{
-			if (hander->copybuf != NULL)
-			{
-				PQfreemem(hander->copybuf);
-				hander->copybuf = NULL;
-			}
-			if (hander->conn)
-			{
-				PQfinish(hander->conn);
-				hander->conn = NULL;
-			}
-			if (local_conn)
-			{
-				PQdescribePrepared(local_conn, stmtname);
-				PQfinish(local_conn);
-			}
-			break;
-		}
-
-		if (!init)
-		{
-			initialize_connection(hander);
-			init_streaming(hander);
-			init = true;
-		}
-
-		msg = exec_logical_decoder(hander, &time_to_abort);
-		if (msg != NULL)
-		{
-			out_put_tuple_to_sql(hander, msg, buffer);
-			paramValues[0] = buffer->data;
-			res = PQexecPrepared(local_conn, stmtname, 1, paramValues, NULL, NULL, 1);
-			if (PQresultStatus(res) != PGRES_COMMAND_OK)
-			{
-				fprintf(stderr, "exec prepare INSERT INTO sync_sqls failed: %s", PQerrorMessage(local_conn));
-				time_to_abort = true;
-			}
-			else
-			{
-				hander->flushpos = hander->recvpos;
-			}
-
-			PQclear(res);
-			resetPQExpBuffer(buffer);
-		}
-		else
-		{
-			pg_sleep(RECONNECT_SLEEP_TIME * 1000000);
-			init = false;
-		}
-	}
-
-
-exit:
-
-	destroyPQExpBuffer(buffer);
-
-	ThreadExit(0);
-	return NULL;
-}
-
-#ifndef WIN32
-
-/*
- * When sigint is called, just tell the system to exit at the next possible
- * moment.
- */
-static void
-sigint_handler(int signum)
-{
-	time_to_abort = true;
-}
-
-#endif
-
 static void
 get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_id)
 {
@@ -1171,16 +1051,146 @@ update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_st
 	return;
 }
 
-#define ERROR_DUPLICATE_KEY		23505
+static void *
+logical_decoding_receive_thread(void *arg)
+{
+	Thread_hd *hd = (Thread_hd *)arg;
+	Decoder_handler *hander;
+	int		rc = 0;
+	bool	init = false;
+	PGconn *local_conn;
+	PQExpBuffer buffer;
+    char    *stmtname = "insert_sqls";
+    Oid     type[1];
+	const char *paramValues[1];
+	PGresult *res = NULL;
 
-#define SQL_TYPE_BEGIN				0
-#define SQL_TYPE_COMMIT				1
-#define SQL_TYPE_FIRST_STATMENT		2
-#define SQL_TYPE_OTHER_STATMENT		3
+    type[0] = 25;
+	buffer = createPQExpBuffer();
 
-/*
- * COPY single table over wire.
- */
+	local_conn = pglogical_connect(hd->local, EXTENSION_NAME "_decoding");
+	if (local_conn == NULL)
+	{
+		fprintf(stderr, "init src conn failed: %s", PQerrorMessage(local_conn));
+		goto exit;
+	}
+	setup_connection(local_conn, 90400, false);
+
+	res = PQprepare(local_conn, stmtname, "INSERT INTO sync_sqls (sql) VALUES($1)", 1, type);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		fprintf(stderr, "create PQprepare failed: %s", PQerrorMessage(local_conn));
+		PQfinish(local_conn);
+		goto exit;
+	}
+	PQclear(res);
+
+	hander = init_hander();
+	hander->connection_string = hd->src;
+	init_logfile(hander);
+	rc = check_handler_parameters(hander);
+	if(rc != 0)
+	{
+		exit(1);
+	}
+
+	rc = initialize_connection(hander);
+	if(rc != 0)
+	{
+		exit(1);
+	}
+
+	hander->replication_slot = hd->slot_name;
+	init_streaming(hander);
+	init = true;
+
+	while (true)
+	{
+		ALI_PG_DECODE_MESSAGE *msg = NULL;
+
+		if (time_to_abort)
+		{
+			if (hander->copybuf != NULL)
+			{
+				PQfreemem(hander->copybuf);
+				hander->copybuf = NULL;
+			}
+			if (hander->conn)
+			{
+				PQfinish(hander->conn);
+				hander->conn = NULL;
+			}
+			if (local_conn)
+			{
+				PQdescribePrepared(local_conn, stmtname);
+				PQfinish(local_conn);
+			}
+			break;
+		}
+
+		if (!init)
+		{
+			initialize_connection(hander);
+			init_streaming(hander);
+			init = true;
+		}
+
+		msg = exec_logical_decoder(hander, &time_to_abort);
+		if (msg != NULL)
+		{
+			out_put_tuple_to_sql(hander, msg, buffer);
+			if(msg->type == MSGKIND_BEGIN)
+			{
+				res = PQexec(local_conn, "BEGIN");
+				if (PQresultStatus(res) != PGRES_COMMAND_OK)
+				{
+					fprintf(stderr, "decoding receive thread begin a local trans failed: %s", PQerrorMessage(local_conn));
+					goto exit;
+				}
+				PQclear(res);
+			}
+
+			paramValues[0] = buffer->data;
+			res = PQexecPrepared(local_conn, stmtname, 1, paramValues, NULL, NULL, 1);
+			if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			{
+				fprintf(stderr, "exec prepare INSERT INTO sync_sqls failed: %s", PQerrorMessage(local_conn));
+				time_to_abort = true;
+				goto exit;
+			}
+			PQclear(res);
+
+			hander->flushpos = hander->recvpos;
+			if(msg->type == MSGKIND_COMMIT)
+			{
+				res = PQexec(local_conn, "END");
+				if (PQresultStatus(res) != PGRES_COMMAND_OK)
+				{
+					fprintf(stderr, "decoding receive thread commit a local trans failed: %s", PQerrorMessage(local_conn));
+					goto exit;
+				}
+				PQclear(res);
+			}
+
+			resetPQExpBuffer(buffer);
+		}
+		else
+		{
+			fprintf(stderr, "decoding receive no record, sleep and reconnect");
+			pg_sleep(RECONNECT_SLEEP_TIME * 1000000);
+			init = false;
+		}
+	}
+
+
+exit:
+
+	destroyPQExpBuffer(buffer);
+
+	ThreadExit(0);
+	return NULL;
+}
+
 static void *
 logical_decoding_apply_thread(void *arg)
 {
@@ -1409,14 +1419,4 @@ get_apply_status(PGconn *conn)
 
 	return rc;
 }
-
-
-#ifdef WIN32
-
-static int64 atoll(const char *nptr)
-{
-	return atol(nptr);
-}
-
-#endif
 

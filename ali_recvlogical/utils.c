@@ -1820,7 +1820,7 @@ init_hander(void)
 	hander->flushpos= InvalidXLogRecPtr;
 	hander->startpos= InvalidXLogRecPtr;
 
-	hander->standby_message_timeout = 1000;
+	hander->standby_message_timeout = 5 * 1000;
 	hander->last_status = -1;
 	hander->progname = (char *)"pg_recvlogical";
 
