@@ -1835,7 +1835,7 @@ init_hander(void)
 
 	hander->outfile = (char *)"-";
 	hander->startpos = ((uint64) hi) << 32 | lo;
-	hander->replication_slot = (char *)"regression_slot";
+	hander->replication_slot = (char *)"rds_logical_sync_slot";
 	hander->do_create_slot = false;
 	hander->do_start_slot = true;
 	hander->do_drop_slot = false;
