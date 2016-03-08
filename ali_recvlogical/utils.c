@@ -34,7 +34,6 @@
 
 static int checktuple(ALI_PG_DECODE_MESSAGE *msg, int kind, Decode_TupleData *new_tuple, Decode_TupleData *old_tuple);
 static void append_insert_colname(ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
-static size_t quote_literal_internal(char *dst, const char *src, size_t len);
 static void quote_literal_local(Decoder_handler *hander, const char *rawstr, char *type, PQExpBuffer buffer);
 static void append_insert_values(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
 static void append_delete_where_statement(Decoder_handler *hander, ALI_PG_DECODE_MESSAGE *msg, PQExpBuffer buffer, Decode_TupleData *tuple);
@@ -1708,7 +1707,7 @@ elog_finish(int elevel, const char *fmt,...)
  * will work with either setting.  Take a look at what dblink
  * uses this for before thinking you know better.
  */
-static size_t
+size_t
 quote_literal_internal(char *dst, const char *src, size_t len)
 {
 	const char *s;

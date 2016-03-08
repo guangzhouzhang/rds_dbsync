@@ -27,6 +27,7 @@ extern bool feTimestampDifferenceExceeds(int64 start_time,
 extern void feTimestampDifference(int64 start_time, int64 stop_time,
 					  long *secs, int *microsecs);
 extern int64 fe_recvint64(char *buf);
+extern size_t quote_literal_internal(char *dst, const char *src, size_t len);
 
 
 

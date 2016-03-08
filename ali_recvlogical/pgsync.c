@@ -27,142 +27,12 @@
 #include <sys/time.h>
 #endif
 
-#ifndef WIN32
 
-#include <sys/time.h>
-
-typedef struct timeval TimevalStruct;
-
-#define GETTIMEOFDAY(T) gettimeofday(T, NULL)
-#define DIFF_MSEC(T, U, res) \
-do { \
-	res = ((((int) ((T)->tv_sec - (U)->tv_sec)) * 1000000.0 + \
-	  ((int) ((T)->tv_usec - (U)->tv_usec))) / 1000.0); \
-} while(0)
-
-static void sigint_handler(int signum);
-
-#else
-
-#include <sys/types.h>
-#include <sys/timeb.h>
-#include <windows.h>
-
-typedef LARGE_INTEGER TimevalStruct;
-#define GETTIMEOFDAY(T) QueryPerformanceCounter(T)
-#define DIFF_MSEC(T, U, res) \
-do { \
-	LARGE_INTEGER frq; 						\
-											\
-	QueryPerformanceFrequency(&frq); 		\
-	res = (double)(((T)->QuadPart - (U)->QuadPart)/(double)frq.QuadPart); \
-	res *= 1000; \
-} while(0)
-
-#endif
-
-#ifdef WIN32
-typedef CRITICAL_SECTION pthread_mutex_t;
-typedef HANDLE	ThreadHandle;
-typedef DWORD	ThreadId;
-typedef unsigned		thid_t;
-
-typedef struct Thread
-{
-	ThreadHandle		os_handle;
-	thid_t				thid;
-}Thread;
-
-typedef CRITICAL_SECTION pthread_mutex_t;
-typedef DWORD		 pthread_t;
-#define pthread_mutex_lock(A)	 (EnterCriticalSection(A),0)
-#define pthread_mutex_trylock(A) win_pthread_mutex_trylock((A))
-#define pthread_mutex_unlock(A)  (LeaveCriticalSection(A), 0)
-#define pthread_mutex_init(A,B)  (InitializeCriticalSection(A),0)
-#define pthread_mutex_lock(A)	 (EnterCriticalSection(A),0)
-#define pthread_mutex_trylock(A) win_pthread_mutex_trylock((A))
-#define pthread_mutex_unlock(A)  (LeaveCriticalSection(A), 0)
-#define pthread_mutex_destroy(A) (DeleteCriticalSection(A), 0)
-
-
-#else
-typedef pthread_t	ThreadHandle;
-typedef pthread_t	ThreadId;
-typedef pthread_t	thid_t;
-
-typedef struct Thread
-{
-	pthread_t	 os_handle;
-} Thread;
-
-#define SIGALRM				14
-#endif 
-
-#ifdef WIN32
-static int64 atoll(const char *nptr);
-#endif
-
-typedef struct ThreadArg
-{
-	int			id;
-	long		count;
-	bool		all_ok;
-	PGconn		*from;
-	PGconn		*to;
-
-	struct Thread_hd *hd;
-}ThreadArg;
-
-typedef struct Thread_hd
-{
-	int			nth;
-	struct ThreadArg *th;
-	
-	const char *snapshot;
-	char		*src;
-	int			src_version;
-	char		*slot_name;
-
-	char		*desc;
-	int			desc_version;
-	bool		desc_is_greenplum;
-	char		*local;
-
-	int			ntask;
-	struct Task_hd		*task;
-	struct Task_hd		*l_task;
-	pthread_mutex_t	t_lock;
-
-	int			ntask_com;
-	struct Task_hd		*task_com;
-	pthread_mutex_t	t_lock_com;
-}Thread_hd;
-
-typedef struct Task_hd
-{
-	int			id;
-	char	   *schemaname;		/* the schema name, or NULL */
-	char	   *relname;		/* the relation/sequence name */
-	long		count;
-	bool		complete;
-
-	struct Task_hd *next;
-}Task_hd;
-
-static PGconn *pglogical_connect(const char *connstring, const char *connname);
 static int start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version);
-static int start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum);
 static int finish_copy_origin_tx(PGconn *conn);
-static int finish_copy_target_tx(PGconn *conn);
 static void *copy_table_data(void *arg);
-static int ThreadCreate(Thread *th, void *(*start)(void *arg), void *arg);
-static bool WaitThreadEnd(int n, Thread *th);
-static void ThreadExit(int code);
-static int ExecuteSqlStatement(PGconn	   *conn, const char *query);
 static char *get_synchronized_snapshot(PGconn *conn);
-static int setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum);
 static bool is_slot_exists(PGconn *conn, char *slotname);
-static bool is_greenplum(PGconn *conn);
 static void *logical_decoding_receive_thread(void *arg);
 static void get_task_status(PGconn *conn, char **full_start, char **full_end, char **decoder_start, char **apply_id);
 static void update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, int64 apply_id);
@@ -187,7 +57,7 @@ static volatile bool time_to_abort = false;
 #define TASK_ID "1"
 
 #ifndef WIN32
-static void
+void
 sigint_handler(int signum)
 {
 	time_to_abort = true;
@@ -228,7 +98,7 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version)
 	return 0;
 }
 
-static int
+int
 start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum)
 {
 	PGresult	   *res;
@@ -269,7 +139,7 @@ finish_copy_origin_tx(PGconn *conn)
 	return 0;
 }
 
-static int
+int
 finish_copy_target_tx(PGconn *conn)
 {
 	PGresult   *res;
@@ -451,7 +321,7 @@ exit:
 /*
  * Make standard postgres connection, ERROR on failure.
  */
-static PGconn *
+PGconn *
 pglogical_connect(const char *connstring, const char *connname)
 {
 	PGconn		   *conn;
@@ -473,7 +343,7 @@ pglogical_connect(const char *connstring, const char *connname)
 	return conn;
 }
 
-static bool
+bool
 WaitThreadEnd(int n, Thread *th)
 {
 	ThreadHandle *hanlde = NULL;
@@ -497,7 +367,7 @@ WaitThreadEnd(int n, Thread *th)
 	return true;
 }
 
-static int
+int
 ThreadCreate(Thread *th,
 				  void *(*start)(void *arg),
 				  void *arg)
@@ -525,7 +395,7 @@ ThreadCreate(Thread *th,
 	return rc;
 }
 
-static void
+void
 ThreadExit(int code)
 {
 #ifdef WIN32
@@ -811,7 +681,7 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	return 0;
 }
 
-static int
+int
 setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum)
 {
 	char *dumpencoding = "utf8";
@@ -872,7 +742,7 @@ setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum)
 	return 0;
 }
 
-static int
+int
 ExecuteSqlStatement(PGconn *conn, const char *query)
 {
 	PGresult   *res;
@@ -942,7 +812,7 @@ is_slot_exists(PGconn *conn, char *slotname)
 	return exist;
 }
 
-static bool
+bool
 is_greenplum(PGconn *conn)
 {
 	char	   *query = "select version from  version()";
