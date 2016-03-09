@@ -279,6 +279,7 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	}
 	else
 	{
+		ntask = 1;
 		th_hd.ntask = 1;
 
 		th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd));
