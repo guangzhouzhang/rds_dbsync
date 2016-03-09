@@ -50,7 +50,8 @@ main(int argc, char **argv)
 
 	src =   (char *)"host=10.98.109.111 port=3012 dbname=base_dplus_phoenixdev user=pg012 password=pgsql";
 	local = (char *)"host=10.98.109.113 port=5666 dbname=dbsync user=test password=pgsql";
-	desc =  (char *)"host=10.98.109.111 dbname=test2 port=5888  user=test password=pgsql";
+	desc = (char *)"host=10.98.109.113 port=5666 dbname=target user=test password=pgsql";
+	//desc =  (char *)"host=10.98.109.111 dbname=test2 port=5888  user=test password=pgsql";
 
 	return db_sync_main(src, desc, local ,5);
 }
