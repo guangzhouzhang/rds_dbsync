@@ -57,11 +57,11 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	src.host = (char *)"10.97.252.32";
-	src.port = 8080;
-	src.user = (char *)"crdsperf";
-	src.passwd = (char *)"crdsperf";
-	src.db = (char *)"crdsperf";
+	src.host = (char *)"localhost";
+	src.port = 3306;
+	src.user = (char *)"test";
+	src.passwd = (char *)"test";
+	src.db = (char *)"test";
 	src.encodingdir = (char *)"share";
 	src.encoding = (char *)"utf8";
 	if(tabname != NULL)
