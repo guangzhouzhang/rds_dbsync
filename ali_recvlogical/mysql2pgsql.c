@@ -30,6 +30,8 @@
 
 #include "mysql.h"
 
+#include "utils.h"
+
 #define STMT_SHOW_TABLES "show full tables in `%s` where table_type='BASE TABLE'"
 
 #define STMT_SELECT      "select * from `%s`.`%s`"
@@ -228,7 +230,7 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	th_hd.desc_is_greenplum = is_greenplum(desc_conn);
 	PQfinish(desc_conn);
 
-	if (need_full_sync)
+	if (hd->tabname == NULL)
 	{
 		PQExpBuffer	query;
 		MYSQL_ROW row;
@@ -272,58 +274,69 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 			}
 		}
 		mysql_free_result(my_res);
-	
-		th_hd.l_task = &(th_hd.task[0]);
 		PQclear(res);
 		destroyPQExpBuffer(query);
+	}
+	else
+	{
+		th_hd.ntask = 1;
 
-		th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
-		for (i = 0; i < th_hd.nth; i++)
+		th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd));
+		th_hd.task[i].id = 0;
+		th_hd.task[i].schemaname = NULL;
+		th_hd.task[i].relname = pstrdup(hd->tabname);
+		th_hd.task[i].count = 0;
+		th_hd.task[i].complete = false;
+		th_hd.task[i].next = NULL;
+	}
+	th_hd.l_task = &(th_hd.task[0]);
+
+	th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
+	for (i = 0; i < th_hd.nth; i++)
+	{
+		th_hd.th[i].id = i;
+		th_hd.th[i].count = 0;
+		th_hd.th[i].all_ok = false;
+
+		th_hd.th[i].hd = &th_hd;
+	}
+	pthread_mutex_init(&th_hd.t_lock, NULL);
+
+	fprintf(stderr, "starting full sync\n");
+
+	thread = (Thread *)palloc0(sizeof(Thread) * th_hd.nth);
+	for (i = 0; i < th_hd.nth; i++)
+	{
+		ThreadCreate(&thread[i], mysql2pgsql_copy_data, &th_hd.th[i]);
+	}
+
+	WaitThreadEnd(th_hd.nth, thread);
+
+	GETTIMEOFDAY(&after);
+	DIFF_MSEC(&after, &before, elapsed_msec);
+
+	for (i = 0; i < th_hd.nth; i++)
+	{
+		if(th_hd.th[i].all_ok)
 		{
-			th_hd.th[i].id = i;
-			th_hd.th[i].count = 0;
-			th_hd.th[i].all_ok = false;
-
-			th_hd.th[i].hd = &th_hd;
+			s_count += th_hd.th[i].count;
 		}
-		pthread_mutex_init(&th_hd.t_lock, NULL);
-
-		fprintf(stderr, "starting full sync\n");
-
-		thread = (Thread *)palloc0(sizeof(Thread) * th_hd.nth);
-		for (i = 0; i < th_hd.nth; i++)
+		else
 		{
-			ThreadCreate(&thread[i], mysql2pgsql_copy_data, &th_hd.th[i]);
+			have_err = true;
 		}
+	}
 
-		WaitThreadEnd(th_hd.nth, thread);
+	for (i = 0; i < ntask; i++)
+	{
+		t_count += th_hd.task[i].count;
+	}
 
-		GETTIMEOFDAY(&after);
-		DIFF_MSEC(&after, &before, elapsed_msec);
-
-		for (i = 0; i < th_hd.nth; i++)
-		{
-			if(th_hd.th[i].all_ok)
-			{
-				s_count += th_hd.th[i].count;
-			}
-			else
-			{
-				have_err = true;
-			}
-		}
-
-		for (i = 0; i < ntask; i++)
-		{
-			t_count += th_hd.task[i].count;
-		}
-
-		fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
-		fprintf(stderr, "full sync time cost %.3f ms\n", elapsed_msec);
-		if (have_err)
-		{
-			fprintf(stderr, "migration process with errors\n");
-		}
+	fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
+	fprintf(stderr, "full sync time cost %.3f ms\n", elapsed_msec);
+	if (have_err)
+	{
+		fprintf(stderr, "migration process with errors\n");
 	}
 
 	return 0;
