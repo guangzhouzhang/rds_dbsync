@@ -117,7 +117,7 @@ typedef struct mysql_conn_info
 	char	*encoding;
 	char	*db;
 	char	*encodingdir;
-//	MYSQL	*conn_hd;
+	char	*tabname;
 }mysql_conn_info;
 
 typedef struct Thread_hd

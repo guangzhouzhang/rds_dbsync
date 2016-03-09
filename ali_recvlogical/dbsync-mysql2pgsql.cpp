@@ -33,6 +33,9 @@
 
 #include "mysql.h"
 
+static bool getOption(int argc, char* argv[]);
+
+static char *tabname = NULL;
 /*
  * Unfortunately we can't do sensible signal handling on windows...
  */
@@ -47,6 +50,12 @@ main(int argc, char **argv)
 	int		rc = 0;
 	char	*desc = NULL;
 	mysql_conn_info src;
+	int		num_thread = 0;
+
+	if (!getOption(argc, argv))
+	{
+		return 1;
+	}
 
 	src.host = (char *)"10.97.252.32";
 	src.port = 8080;
@@ -55,9 +64,44 @@ main(int argc, char **argv)
 	src.db = (char *)"crdsperf";
 	src.encodingdir = (char *)"share";
 	src.encoding = (char *)"utf8";
+	if(tabname != NULL)
+	{
+		src.tabname = (char *)tabname;
+		num_thread = 1;
+	}
+	else
+	{
+		src.tabname = NULL;
+		num_thread = 5;
+	}
 	
 	desc =  (char *)"host=10.98.109.111 dbname=gptest port=5888  user=gptest password=pgsql";
 
-	return mysql2pgsql_sync_main(desc , 1, &src);
+	return mysql2pgsql_sync_main(desc , num_thread, &src);
+}
+
+static 
+bool getOption(int argc, char* argv[])
+{
+	int c;
+	while (true)
+	{
+		c = getopt(argc, argv, "t:");
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 't':
+			tabname = optarg;
+			break;
+	
+		case '?':
+		default:
+			return false;
+		}
+	}
+
+	return true;
 }
 
