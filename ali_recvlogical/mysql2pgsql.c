@@ -134,6 +134,7 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 				break;
 
 			case MYSQL_TYPE_DECIMAL:
+			case MYSQL_TYPE_NEWDECIMAL:
 				appendPQExpBuffer(ddl, "%s %s", field->org_name, "numeric");
 				col_type[i] = NUMERICOID;
 				break;
@@ -472,7 +473,7 @@ mysql2pgsql_copy_data(void *arg)
 			goto exit;
 		}
 		my_res = mysql_use_result(origin_conn);
-		column_oids = fetch_colmum_info(hd->mysql_src->tabname, my_res);
+		column_oids = fetch_colmum_info(relname, my_res);
 		if (column_oids == NULL)
 		{
 			fprintf(stderr, "get table %s column type error", relname);
