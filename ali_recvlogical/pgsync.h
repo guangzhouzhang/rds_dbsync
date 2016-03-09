@@ -32,8 +32,6 @@ do { \
 	  ((int) ((T)->tv_usec - (U)->tv_usec))) / 1000.0); \
 } while(0)
 
-extern void sigint_handler(int signum);
-
 #else
 
 #include <sys/types.h>

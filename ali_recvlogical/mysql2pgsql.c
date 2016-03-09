@@ -29,8 +29,9 @@
 #endif
 
 #include "mysql.h"
-
 #include "utils.h"
+
+static volatile bool time_to_abort = false;
 
 #define STMT_SHOW_TABLES "show full tables in `%s` where table_type='BASE TABLE'"
 
@@ -38,24 +39,46 @@
 
 static MYSQL *connect_to_mysql(mysql_conn_info* hd);
 static void *mysql2pgsql_copy_data(void *arg);
-static Oid *fetch_colmum_info(MYSQL_RES *my_res);
+static Oid *fetch_colmum_info(char *tabname, MYSQL_RES *my_res);
 static void quote_literal_local_withoid(StringInfo s, const char *rawstr, Oid type, PQExpBuffer buffer);
 static int setup_connection_from_mysql(PGconn *conn);
+static void sigint_handler(int signum);
 
+#ifndef WIN32
+static void
+sigint_handler(int signum)
+{
+	time_to_abort = true;
+}
+#endif
 
 static Oid *
-fetch_colmum_info(MYSQL_RES *my_res)
+fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 {
 	MYSQL_FIELD *field;
 	int		col_num = 0;
 	Oid		*col_type = NULL;
 	int		i = 0;
+	PQExpBuffer ddl;
+	bool	first = true;
 
+	ddl = createPQExpBuffer();
+	appendPQExpBuffer(ddl, "CREATE TABLE IF NOT EXISTS %s (", tabname);
+	
 	col_num = mysql_num_fields(my_res);
 	col_type = palloc0(sizeof(Oid) * col_num);
     for (i = 0; i < col_num; i++)
     {
 		int type;
+
+		if (first)
+		{
+			first = false;
+		}
+		else
+		{
+			appendPQExpBufferStr(ddl, ",");
+		}
 
 		field = mysql_fetch_field(my_res);
     	type = field->type;
@@ -65,6 +88,7 @@ fetch_colmum_info(MYSQL_RES *my_res)
 			case MYSQL_TYPE_VAR_STRING:
 			case MYSQL_TYPE_STRING:
 			case MYSQL_TYPE_BIT:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "text");
 				col_type[i] = TEXTOID;
 				break;
 
@@ -74,42 +98,54 @@ fetch_colmum_info(MYSQL_RES *my_res)
 			case MYSQL_TYPE_DATETIME:
 			case MYSQL_TYPE_YEAR:
 			case MYSQL_TYPE_NEWDATE:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "timestamp");
 				col_type[i] = TIMESTAMPOID;
 				break;
 
 			case MYSQL_TYPE_SHORT:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "int2");
 				col_type[i] = INT2OID;
 				break;
 
 			case MYSQL_TYPE_TINY:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "int4");
 				col_type[i] = INT4OID;
 				break;
 
 			case MYSQL_TYPE_LONG:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "int4");
 				col_type[i] = INT4OID;
 				break;
 
 			case MYSQL_TYPE_LONGLONG:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "int8");
 				col_type[i] = INT8OID;
 				break;
 	
 			case MYSQL_TYPE_FLOAT:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "float4");
 				col_type[i] = FLOAT4OID;
 				break;
 				
 			case MYSQL_TYPE_DOUBLE:
-					col_type[i] = FLOAT8OID;
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "float8");
+				col_type[i] = FLOAT8OID;
 				break;
 
 			case MYSQL_TYPE_DECIMAL:
+				appendPQExpBuffer(ddl, "%s %s", field->org_name, "numeric");
 				col_type[i] = NUMERICOID;
 				break;
 
 			default:
 				return NULL;
-
 		}
     }
+	appendPQExpBufferStr(ddl, ");");
+
+	fprintf(stderr, "table info:\n %s\n", ddl->data);
+	
+	destroyPQExpBuffer(ddl);
 
 	return col_type;
 }
@@ -197,7 +233,6 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	TimevalStruct before,
 					after; 
 	double		elapsed_msec = 0;
-	bool	need_full_sync = true;
 	int		ntask = 0;
 	MYSQL	*conn_src = NULL;
 	MYSQL_RES	*my_res = NULL;
@@ -432,11 +467,11 @@ mysql2pgsql_copy_data(void *arg)
 		ret = mysql_query(origin_conn, query->data);
 		if (ret != 0)
 		{
-			printf("run query error: %s", mysql_error(origin_conn));
+			fprintf(stderr, "run query error: %s", mysql_error(origin_conn));
 			goto exit;
 		}
 		my_res = mysql_use_result(origin_conn);
-		column_oids = fetch_colmum_info(my_res);
+		column_oids = fetch_colmum_info(hd->mysql_src->tabname, my_res);
 		if (column_oids == NULL)
 		{
 			fprintf(stderr, "get table %s column type error", relname);
@@ -490,7 +525,12 @@ mysql2pgsql_copy_data(void *arg)
 			}
 			args->count++;
 			curr->count++;
-			//PQfreemem(copybuf);
+
+			if (time_to_abort)
+			{
+				fprintf(stderr, "receive shutdown sigint\n");
+				goto exit;
+			}
 		}
 
 		/* Send local finish */

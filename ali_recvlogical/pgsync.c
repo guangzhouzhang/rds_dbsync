@@ -38,6 +38,7 @@ static void get_task_status(PGconn *conn, char **full_start, char **full_end, ch
 static void update_task_status(PGconn *conn, bool full_start, bool full_end, bool decoder_start, int64 apply_id);
 static void *logical_decoding_apply_thread(void *arg);
 static int64 get_apply_status(PGconn *conn);
+static void sigint_handler(int signum);
 
 static volatile bool time_to_abort = false;
 
@@ -57,7 +58,7 @@ static volatile bool time_to_abort = false;
 #define TASK_ID "1"
 
 #ifndef WIN32
-void
+static void
 sigint_handler(int signum)
 {
 	time_to_abort = true;
