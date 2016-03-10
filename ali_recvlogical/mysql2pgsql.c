@@ -140,6 +140,7 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 				break;
 
 			default:
+				fprintf(stderr, "problem col %s type %s\n", field->org_name, type);
 				return NULL;
 		}
     }
@@ -167,7 +168,7 @@ connect_to_mysql(mysql_conn_info* hd)
 		ret = mysql_options(m_mysqlConnection, MYSQL_SET_CHARSET_NAME, hd->encoding);
 		if (ret != 0)
 		{
-			printf("set CHARSET_NAME to %s error: %s", hd->encoding, mysql_error(m_mysqlConnection));
+			fprintf(stderr, "set CHARSET_NAME to %s error: %s", hd->encoding, mysql_error(m_mysqlConnection));
 			return NULL;
 		}
 	}
@@ -176,7 +177,7 @@ connect_to_mysql(mysql_conn_info* hd)
 		ret = mysql_options(m_mysqlConnection, MYSQL_SET_CHARSET_DIR, hd->encodingdir);
 		 if (ret != 0)
 		{
-			printf("set CHARSET_DIR to %s error: %s", hd->encodingdir, mysql_error(m_mysqlConnection));
+			fprintf(stderr, "set CHARSET_DIR to %s error: %s", hd->encodingdir, mysql_error(m_mysqlConnection));
 			return NULL;
 		}
 	}
@@ -191,7 +192,7 @@ connect_to_mysql(mysql_conn_info* hd)
 	ret = mysql_options(m_mysqlConnection, MYSQL_OPT_RECONNECT, &m_reConn);
 	 if (ret != 0)
 	{
-		printf("set OPT_RECONNECT error: %s", mysql_error(m_mysqlConnection));
+		fprintf(stderr, "set OPT_RECONNECT error: %s", mysql_error(m_mysqlConnection));
 		return NULL;
 	}
 
@@ -204,7 +205,7 @@ connect_to_mysql(mysql_conn_info* hd)
 				NULL,
 				CLIENT_MULTI_STATEMENTS|CLIENT_MULTI_RESULTS))
 	{
-		printf("connect error: %s", mysql_error(m_mysqlConnection));
+		fprintf(stderr, "connect error: %s", mysql_error(m_mysqlConnection));
 
 		return NULL;
 	}
@@ -212,7 +213,7 @@ connect_to_mysql(mysql_conn_info* hd)
 	ret = mysql_query(m_mysqlConnection, "set unique_checks = 0;");
 	if (ret != 0)
 	{
-		printf("set unique_checks = 0 error: %s", mysql_error(m_mysqlConnection));
+		fprintf(stderr, "set unique_checks = 0 error: %s", mysql_error(m_mysqlConnection));
 		return NULL;
 	}
 
