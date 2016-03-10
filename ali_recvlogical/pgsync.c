@@ -296,6 +296,15 @@ copy_table_data(void *arg)
 			goto exit;
 		}
 
+		PQclear(res2);
+		res2 = PQgetResult(target_conn);
+		if (PQresultStatus(res2) != PGRES_COMMAND_OK)
+		{
+			fprintf(stderr, "COPY failed for table \"%s\": %s",
+								 relname, PQerrorMessage(target_conn));
+			goto exit;
+		}
+
 		finish_copy_origin_tx(origin_conn);
 		finish_copy_target_tx(target_conn);
 		curr->complete = true;

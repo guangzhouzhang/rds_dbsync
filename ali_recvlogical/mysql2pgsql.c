@@ -145,7 +145,7 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
     }
 	appendPQExpBufferStr(ddl, ");");
 
-	fprintf(stderr, "table info:\n %s\n", ddl->data);
+	fprintf(stderr, "%s\n", ddl->data);
 	
 	destroyPQExpBuffer(ddl);
 
@@ -525,6 +525,7 @@ mysql2pgsql_copy_data(void *arg)
 							 PQerrorMessage(target_conn));
 				goto exit;
 			}
+				
 			args->count++;
 			curr->count++;
 
@@ -540,6 +541,15 @@ mysql2pgsql_copy_data(void *arg)
 		{
 			fprintf(stderr,"sending copy-completion to destination connection failed destination connection reported: %s",
 						 PQerrorMessage(target_conn));
+			goto exit;
+		}
+		
+		PQclear(res2);
+		res2 = PQgetResult(target_conn);
+		if (PQresultStatus(res2) != PGRES_COMMAND_OK)
+		{
+			fprintf(stderr, "COPY failed for table \"%s\": %s",
+								 relname, PQerrorMessage(target_conn));
 			goto exit;
 		}
 
