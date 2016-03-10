@@ -140,7 +140,7 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 				break;
 
 			default:
-				fprintf(stderr, "problem col %s type %s\n", field->org_name, type);
+				fprintf(stderr, "problem col %s type %d\n", field->org_name, type);
 				return NULL;
 		}
     }
@@ -596,7 +596,17 @@ quote_literal_local_withoid(StringInfo s, const char *rawstr, Oid type, PQExpBuf
 	else if (NUMERICOID == type)
 		need_process = false;
 	else if (TIMESTAMPOID == type)
+	{
+		if (strcmp(rawstr, "0000-00-00") == 0 ||
+			strcmp(rawstr, "00:00:00") == 0 ||
+			strcmp(rawstr, "0000-00-00 00:00:00") == 0 ||
+			strcmp(rawstr, "0000") == 0)
+		{
+			return;
+		}
+	
 		need_process = false;
+	}
 
 	if (need_process == false)
 	{
