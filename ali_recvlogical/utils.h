@@ -9,7 +9,7 @@
 #include "lib/stringinfo.h"
 #include "common/fe_memutils.h"
 
-#include "libpq-fe.h"
+//#include "libpq-fe.h"
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
@@ -19,7 +19,7 @@
 
 extern void pq_copymsgbytes(StringInfo msg, char *buf, int datalen);
 extern void fe_sendint64(int64 i, char *buf);
-extern PGconn *GetConnection(char *connection_string);
+extern struct PGconn *GetConnection(char *connection_string);
 extern int64 feGetCurrentTimestamp(void);
 extern bool feTimestampDifferenceExceeds(int64 start_time,
 							 int64 stop_time,
@@ -27,7 +27,6 @@ extern bool feTimestampDifferenceExceeds(int64 start_time,
 extern void feTimestampDifference(int64 start_time, int64 stop_time,
 					  long *secs, int *microsecs);
 extern int64 fe_recvint64(char *buf);
-extern size_t quote_literal_internal(char *dst, const char *src, size_t len);
 extern int getopt(int nargc, char *const * nargv, const char *ostr);
 
 

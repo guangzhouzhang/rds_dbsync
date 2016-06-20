@@ -12,9 +12,9 @@
 
 #include "postgres_fe.h"
 
-#include <dirent.h>
+//#include <dirent.h>
 #include <sys/stat.h>
-#include <unistd.h>
+//#include <unistd.h>
 
 #include "lib/stringinfo.h"
 
@@ -51,11 +51,6 @@ main(int argc, char **argv)
 	char	*desc = NULL;
 	mysql_conn_info src;
 	int		num_thread = 0;
-
-	if (!getOption(argc, argv))
-	{
-		return 1;
-	}
 
 	src.host = (char *)"localhost";
 	src.port = 3306;

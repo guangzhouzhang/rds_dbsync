@@ -9,11 +9,13 @@
 #include "lib/stringinfo.h"
 #include "common/fe_memutils.h"
 
-#include "libpq-fe.h"
+//#include "libpq-fe.h"
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
 #include "pqexpbuffer.h"
+
+#include "misc.h"
 
 #ifdef __cplusplus
 extern		"C"
@@ -52,43 +54,6 @@ do { \
 #endif
 
 #ifdef WIN32
-typedef CRITICAL_SECTION pthread_mutex_t;
-typedef HANDLE	ThreadHandle;
-typedef DWORD	ThreadId;
-typedef unsigned		thid_t;
-
-typedef struct Thread
-{
-	ThreadHandle		os_handle;
-	thid_t				thid;
-}Thread;
-
-typedef CRITICAL_SECTION pthread_mutex_t;
-typedef DWORD		 pthread_t;
-#define pthread_mutex_lock(A)	 (EnterCriticalSection(A),0)
-#define pthread_mutex_trylock(A) win_pthread_mutex_trylock((A))
-#define pthread_mutex_unlock(A)  (LeaveCriticalSection(A), 0)
-#define pthread_mutex_init(A,B)  (InitializeCriticalSection(A),0)
-#define pthread_mutex_lock(A)	 (EnterCriticalSection(A),0)
-#define pthread_mutex_trylock(A) win_pthread_mutex_trylock((A))
-#define pthread_mutex_unlock(A)  (LeaveCriticalSection(A), 0)
-#define pthread_mutex_destroy(A) (DeleteCriticalSection(A), 0)
-
-
-#else
-typedef pthread_t	ThreadHandle;
-typedef pthread_t	ThreadId;
-typedef pthread_t	thid_t;
-
-typedef struct Thread
-{
-	pthread_t	 os_handle;
-} Thread;
-
-#define SIGALRM				14
-#endif 
-
-#ifdef WIN32
 static int64 atoll(const char *nptr);
 #endif
 
@@ -100,8 +65,8 @@ typedef struct ThreadArg
 	int			id;
 	long		count;
 	bool		all_ok;
-	PGconn		*from;
-	PGconn		*to;
+	struct PGconn		*from;
+	struct PGconn		*to;
 
 	struct Thread_hd *hd;
 }ThreadArg;
@@ -160,16 +125,9 @@ typedef struct Task_hd
 #define EXTENSION_NAME "rds_logical_sync"
 
 extern int db_sync_main(char *src, char *desc, char *local, int nthread);
-extern PGconn *pglogical_connect(const char *connstring, const char *connname);
-extern bool is_greenplum(PGconn *conn);
-extern bool WaitThreadEnd(int n, Thread *th);
-extern void ThreadExit(int code);
-extern int ThreadCreate(Thread *th, void *(*start)(void *arg), void *arg);
+
+
 extern int mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd);
-extern int start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum);
-extern int finish_copy_target_tx(PGconn *conn);
-extern int ExecuteSqlStatement(PGconn	   *conn, const char *query);
-extern int setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum);
 
 
 #ifdef __cplusplus

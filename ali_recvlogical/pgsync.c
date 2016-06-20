@@ -28,8 +28,7 @@
 #endif
 
 
-static int start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version);
-static int finish_copy_origin_tx(PGconn *conn);
+
 static void *copy_table_data(void *arg);
 static char *get_synchronized_snapshot(PGconn *conn);
 static bool is_slot_exists(PGconn *conn, char *slotname);
@@ -70,94 +69,6 @@ static int64 atoll(const char *nptr)
 }
 #endif
 
-static int
-start_copy_origin_tx(PGconn *conn, const char *snapshot, int pg_version)
-{
-	PGresult	   *res;
-	const char	   *setup_query =
-		"BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n";
-	StringInfoData	query;
-
-	initStringInfo(&query);
-	appendStringInfoString(&query, setup_query);
-
-	if (snapshot)
-		appendStringInfo(&query, "SET TRANSACTION SNAPSHOT '%s';\n", snapshot);
-
-	res = PQexec(conn, query.data);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "BEGIN on origin node failed: %s",
-				PQresultErrorMessage(res));
-		return 1;
-	}
-
-	PQclear(res);
-	
-	setup_connection(conn, pg_version, false);
-
-	return 0;
-}
-
-int
-start_copy_target_tx(PGconn *conn, int pg_version, bool is_greenplum)
-{
-	PGresult	   *res;
-	const char	   *setup_query =
-		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n";
-
-	res = PQexec(conn, setup_query);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "BEGIN on target node failed: %s",
-				PQresultErrorMessage(res));
-		return 1;
-	}
-
-	PQclear(res);
-
-	setup_connection(conn, pg_version, is_greenplum);
-
-	return 0;
-}
-
-static int
-finish_copy_origin_tx(PGconn *conn)
-{
-	PGresult   *res;
-
-	/* Close the  transaction and connection on origin node. */
-	res = PQexec(conn, "ROLLBACK");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "ROLLBACK on origin node failed: %s",
-				PQresultErrorMessage(res));
-		return 1;
-	}
-
-	PQclear(res);
-	//PQfinish(conn);
-	return 0;
-}
-
-int
-finish_copy_target_tx(PGconn *conn)
-{
-	PGresult   *res;
-
-	/* Close the transaction and connection on target node. */
-	res = PQexec(conn, "COMMIT");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "COMMIT on target node failed: %s",
-				PQresultErrorMessage(res));
-		return 1;
-	}
-
-	PQclear(res);
-	//PQfinish(conn);
-	return 0;
-}
 
 /*
  * COPY single table over wire.
@@ -328,93 +239,6 @@ exit:
 	return NULL;
 }
 
-/*
- * Make standard postgres connection, ERROR on failure.
- */
-PGconn *
-pglogical_connect(const char *connstring, const char *connname)
-{
-	PGconn		   *conn;
-	StringInfoData	dsn;
-
-	initStringInfo(&dsn);
-	appendStringInfo(&dsn,
-					"%s fallback_application_name='%s'",
-					connstring, connname);
-
-	conn = PQconnectdb(dsn.data);
-	if (PQstatus(conn) != CONNECTION_OK)
-	{
-		fprintf(stderr,"could not connect to the postgresql server: %s dsn was: %s",
-						PQerrorMessage(conn), dsn.data);
-		return NULL;
-	}
-
-	return conn;
-}
-
-bool
-WaitThreadEnd(int n, Thread *th)
-{
-	ThreadHandle *hanlde = NULL;
-	int i;
-
-	hanlde = (ThreadHandle *)malloc(sizeof(ThreadHandle) * n);
-	for(i = 0; i < n; i++)
-	{
-		hanlde[i]=th[i].os_handle;
-	}
-
-#ifdef WIN32
-	WaitForMultipleObjects(n, hanlde, TRUE, INFINITE);
-#else
-	for(i = 0; i < n; i++)
-		pthread_join(hanlde[i], NULL);
-#endif
-
-	free(hanlde);
-
-	return true;
-}
-
-int
-ThreadCreate(Thread *th,
-				  void *(*start)(void *arg),
-				  void *arg)
-{
-	int		rc = -1;
-#ifdef WIN32
-	th->os_handle = (HANDLE)_beginthreadex(NULL,
-		0,								
-		(unsigned(__stdcall*)(void*)) start,
-		arg,			
-		0,				
-		&th->thid);		
-
-	/* error for returned value 0 */
-	if (th->os_handle == (HANDLE) 0)
-		th->os_handle = INVALID_HANDLE_VALUE;
-	else
-		rc = 1;
-#else
-	rc = pthread_create(&th->os_handle,
-		NULL,
-		start,
-		arg);
-#endif
-	return rc;
-}
-
-void
-ThreadExit(int code)
-{
-#ifdef WIN32
-    _endthreadex((unsigned) code);
-#else
-	pthread_exit((void *)NULL);
-	return;
-#endif
-}
 
 int 
 db_sync_main(char *src, char *desc, char *local, int nthread)
@@ -691,84 +515,6 @@ db_sync_main(char *src, char *desc, char *local, int nthread)
 	return 0;
 }
 
-int
-setup_connection(PGconn *conn, int remoteVersion, bool is_greenplum)
-{
-	char *dumpencoding = "utf8";
-
-	/*
-	 * Set the client encoding if requested. If dumpencoding == NULL then
-	 * either it hasn't been requested or we're a cloned connection and then
-	 * this has already been set in CloneArchive according to the original
-	 * connection encoding.
-	 */
-	if (PQsetClientEncoding(conn, dumpencoding) < 0)
-	{
-		fprintf(stderr, "invalid client encoding \"%s\" specified\n",
-					dumpencoding);
-		return 1;
-	}
-
-	/*
-	 * Get the active encoding and the standard_conforming_strings setting, so
-	 * we know how to escape strings.
-	 */
-	//AH->encoding = PQclientEncoding(conn);
-
-	//std_strings = PQparameterStatus(conn, "standard_conforming_strings");
-	//AH->std_strings = (std_strings && strcmp(std_strings, "on") == 0);
-
-	/* Set the datestyle to ISO to ensure the dump's portability */
-	ExecuteSqlStatement(conn, "SET DATESTYLE = ISO");
-
-	/* Likewise, avoid using sql_standard intervalstyle */
-	if (remoteVersion >= 80400)
-		ExecuteSqlStatement(conn, "SET INTERVALSTYLE = POSTGRES");
-
-	/*
-	 * If supported, set extra_float_digits so that we can dump float data
-	 * exactly (given correctly implemented float I/O code, anyway)
-	 */
-	if (remoteVersion >= 90000)
-		ExecuteSqlStatement(conn, "SET extra_float_digits TO 3");
-	else if (remoteVersion >= 70400)
-		ExecuteSqlStatement(conn, "SET extra_float_digits TO 2");
-
-	/*
-	 * If synchronized scanning is supported, disable it, to prevent
-	 * unpredictable changes in row ordering across a dump and reload.
-	 */
-	if (remoteVersion >= 80300 && !is_greenplum)
-		ExecuteSqlStatement(conn, "SET synchronize_seqscans TO off");
-
-	/*
-	 * Disable timeouts if supported.
-	 */
-	if (remoteVersion >= 70300)
-		ExecuteSqlStatement(conn, "SET statement_timeout = 0");
-	if (remoteVersion >= 90300)
-		ExecuteSqlStatement(conn, "SET lock_timeout = 0");
-
-	return 0;
-}
-
-int
-ExecuteSqlStatement(PGconn *conn, const char *query)
-{
-	PGresult   *res;
-	int		rc = 0;
-
-	res = PQexec(conn, query);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-	{
-		fprintf(stderr, "set %s failed: %s",
-						query, PQerrorMessage(conn));
-		rc = 1;
-	}
-	PQclear(res);
-
-	return rc;
-}
 
 static char *
 get_synchronized_snapshot(PGconn *conn)
@@ -820,31 +566,6 @@ is_slot_exists(PGconn *conn, char *slotname)
 	destroyPQExpBuffer(query);
 
 	return exist;
-}
-
-bool
-is_greenplum(PGconn *conn)
-{
-	char	   *query = "select version from  version()";
-	bool	is_greenplum = false;
-	char	*result;
-	PGresult   *res;
-
-	res = PQexec(conn, query);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		fprintf(stderr, "init sql run failed: %s", PQresultErrorMessage(res));
-		return false;
-	}
-	result = PQgetvalue(res, 0, 0);
-	if (strstr(result, "Greenplum") != NULL)
-	{
-		is_greenplum = true;
-	}
-	
-	PQclear(res);
-
-	return is_greenplum;
 }
 
 static void
