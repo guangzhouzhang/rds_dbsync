@@ -9,7 +9,7 @@
 #include "lib/stringinfo.h"
 #include "common/fe_memutils.h"
 
-//#include "libpq-fe.h"
+#include "libpq-fe.h"
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
@@ -52,6 +52,7 @@ typedef struct Thread
 #define SIGALRM				14
 #endif 
 
+#define MaxAllocSize	((Size) 0x3fffffff)		/* 1 gigabyte - 1 */
 
 extern bool WaitThreadEnd(int n, Thread *th);
 extern void ThreadExit(int code);

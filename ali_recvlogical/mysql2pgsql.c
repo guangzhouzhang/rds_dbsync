@@ -12,7 +12,7 @@
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
-#include "pg_logicaldecode.h"
+//#include "pg_logicaldecode.h"
 #include "pqexpbuffer.h"
 #include "pgsync.h"
 #include "nodes/pg_list.h"

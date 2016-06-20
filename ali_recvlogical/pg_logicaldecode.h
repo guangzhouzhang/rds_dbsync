@@ -14,7 +14,7 @@
 #include "access/transam.h"
 #include "libpq/pqformat.h"
 #include "pqexpbuffer.h"
-
+#include "misc.h"
 
 #ifdef __cplusplus
 extern		"C"
@@ -147,10 +147,6 @@ typedef struct Decoder_handler
 #define PG_FUNCNAME_MACRO	NULL
 #endif
 #endif
-
-
-
-#define MaxAllocSize	((Size) 0x3fffffff)		/* 1 gigabyte - 1 */
 
 extern bool bdr_process_remote_action(StringInfo s, ALI_PG_DECODE_MESSAGE *msg);
 

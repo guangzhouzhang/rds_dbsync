@@ -16,7 +16,7 @@
 
 #include "postgres_fe.h"
 #include "lib/stringinfo.h"
-#include "pg_logicaldecode.h"
+#include "misc.h"
 
 
 /*

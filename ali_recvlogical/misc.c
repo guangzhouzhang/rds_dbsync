@@ -7,7 +7,7 @@
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
-#include "pg_logicaldecode.h"
+//#include "pg_logicaldecode.h"
 #include "pqexpbuffer.h"
 
 #include "misc.h"
@@ -429,9 +429,6 @@ pg_free(void *ptr)
 	if (ptr != NULL)
 		free(ptr);
 }
-
-/* It's possible we could use a different value for this in frontend code */
-#define MaxAllocSize	((Size) 0x3fffffff)		/* 1 gigabyte - 1 */
 
 char *
 psprintf(const char *fmt,...)
