@@ -65,8 +65,8 @@ typedef struct ThreadArg
 	int			id;
 	long		count;
 	bool		all_ok;
-	struct PGconn		*from;
-	struct PGconn		*to;
+	PGconn		*from;
+	PGconn		*to;
 
 	struct Thread_hd *hd;
 }ThreadArg;

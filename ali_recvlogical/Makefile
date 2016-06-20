@@ -6,7 +6,7 @@ MODULE_big = ali_recvlogical
 MODULES = ali_recvlogical
 
 EXTENSION = ali_recvlogical
-OBJS = pg_logicaldecode.o pqformat.o stringinfo.o utils.o pgsync.o
+OBJS = pg_logicaldecode.o pqformat.o stringinfo.o utils.o misc.o pgsync.o
 
 PG_CPPFLAGS  = -DFRONTEND -I$(srcdir) -I$(libpq_srcdir) -I/u01/mysql/include/
 PG_FLAGS  = -DFRONTEND -I$(srcdir) -I$(libpq_srcdir) -I/u01/mysql/include/

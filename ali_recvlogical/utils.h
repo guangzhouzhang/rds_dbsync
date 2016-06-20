@@ -19,7 +19,7 @@
 
 extern void pq_copymsgbytes(StringInfo msg, char *buf, int datalen);
 extern void fe_sendint64(int64 i, char *buf);
-extern struct PGconn *GetConnection(char *connection_string);
+extern PGconn *GetConnection(char *connection_string);
 extern int64 feGetCurrentTimestamp(void);
 extern bool feTimestampDifferenceExceeds(int64 start_time,
 							 int64 stop_time,

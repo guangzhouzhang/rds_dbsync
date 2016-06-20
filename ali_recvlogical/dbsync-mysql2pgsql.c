@@ -12,9 +12,7 @@
 
 #include "postgres_fe.h"
 
-//#include <dirent.h>
 #include <sys/stat.h>
-//#include <unistd.h>
 
 #include "lib/stringinfo.h"
 
@@ -33,16 +31,7 @@
 
 #include "mysql.h"
 
-static bool getOption(int argc, char* argv[]);
-
 static char *tabname = NULL;
-/*
- * Unfortunately we can't do sensible signal handling on windows...
- */
-
-
-// SELECT * FROM pg_create_logical_replication_slot('regression_slot', 'ali_decoding');
-//hander->connection_string = (char *)"hostaddr=10.101.82.48 port=5432 dbname=test user=test password=pgsql";
 
 int
 main(int argc, char **argv)
@@ -74,29 +63,3 @@ main(int argc, char **argv)
 
 	return mysql2pgsql_sync_main(desc , num_thread, &src);
 }
-
-static 
-bool getOption(int argc, char* argv[])
-{
-	int c;
-	while (true)
-	{
-		c = getopt(argc, argv, "t:");
-		if (c == -1)
-			break;
-
-		switch (c)
-		{
-		case 't':
-			tabname = optarg;
-			break;
-	
-		case '?':
-		default:
-			return false;
-		}
-	}
-
-	return true;
-}
-

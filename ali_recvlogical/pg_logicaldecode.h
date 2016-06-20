@@ -29,10 +29,10 @@ struct pg_conn;
 
 #ifdef HAVE_INT64_TIMESTAMP
 typedef int64 timestamp;
-typedef int64 TimestampTz;
+//typedef int64 TimestampTz;
 #else
 typedef double timestamp;
-typedef double TimestampTz;
+//typedef double TimestampTz;
 #endif
 
 #define MaxTupleAttributeNumber 1664	/* 8 * 208 */
