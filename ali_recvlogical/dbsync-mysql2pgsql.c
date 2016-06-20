@@ -24,7 +24,6 @@
 #include "pqexpbuffer.h"
 #include "libpq/pqformat.h"
 
-#include "pg_logicaldecode.h"
 #include "catalog/catversion.h"
 
 #include "pgsync.h"
