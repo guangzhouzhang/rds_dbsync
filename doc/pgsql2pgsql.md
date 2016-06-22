@@ -25,8 +25,12 @@
 
 #注意
 	1. 如果要做增量数据同步，连接源库需要有创建 replication slot 的权限
-	1. 源库 pgsql 的连接信息中，用户最好是对应 åDB 的 owner
-	2. 目的库 pgsql 的连接信息，用户需要对目标表有写权限
+	2. 源库 pgsql 的连接信息中，用户最好是对应 DB 的 owner
+	3. 目的库 pgsql 的连接信息，用户需要对目标表有写权限
+	4. PostgreSQL 9.4 以及以上的版本因为支持逻辑流复制，所以支持作为数据源的增量迁移。打开下列内核参数才能让内核支持逻辑流复制功能。
+		a. wal_level = logical
+		b. max_wal_senders = 6
+		c. max_replication_slots = 6
 
 # mysql2pgsql用法
 
