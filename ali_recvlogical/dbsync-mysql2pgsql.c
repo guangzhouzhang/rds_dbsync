@@ -21,6 +21,7 @@ main(int argc, char **argv)
 	cfg = init_config("my.cfg");
 	if (cfg == NULL)
 	{
+		fprintf(stderr, "read config file error, insufficient permissions or my.cfg does not exist");
 		return 1;
 	}
 
@@ -38,7 +39,10 @@ main(int argc, char **argv)
 		src.user == NULL || src.passwd == NULL ||
 		src.db == NULL || src.encodingdir == NULL ||
 		src.encoding == NULL || desc == NULL)
+	{
+		fprintf(stderr, "parameter error, the necessary parameter is empty");
 		return 1;
+	}
 
 	src.port = atoi(sport);
 
