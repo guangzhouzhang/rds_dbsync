@@ -10,12 +10,22 @@
 
 #define INI_VERSION "0.1.1"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct ini_t ini_t;
 
-ini_t*      ini_load(const char *filename);
-void        ini_free(ini_t *ini);
-const char* ini_get(ini_t *ini, const char *section, const char *key);
-int         ini_sget(ini_t *ini, const char *section, const char *value,
+extern ini_t*      ini_load(const char *filename);
+extern void        ini_free(ini_t *ini);
+extern const char* ini_get(ini_t *ini, const char *section, const char *key);
+extern int         ini_sget(ini_t *ini, const char *section, const char *value,
                      const char *scanfmt, void *dst);
+extern void *init_config(char *cfgpath);
+extern int get_config(void *cfg, char *sec, char* key, char **value);
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 
 #endif
