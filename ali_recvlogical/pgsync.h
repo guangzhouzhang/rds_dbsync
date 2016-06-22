@@ -9,9 +9,6 @@
 #include "lib/stringinfo.h"
 #include "common/fe_memutils.h"
 
-//#include "libpq-fe.h"
-
-#include "access/transam.h"
 #include "libpq/pqformat.h"
 #include "pqexpbuffer.h"
 

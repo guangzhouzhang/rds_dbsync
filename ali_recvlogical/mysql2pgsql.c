@@ -3,7 +3,6 @@
  *
  */
 
-
 #include "postgres_fe.h"
 #include "lib/stringinfo.h"
 #include "common/fe_memutils.h"
@@ -12,7 +11,6 @@
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
-//#include "pg_logicaldecode.h"
 #include "pqexpbuffer.h"
 #include "pgsync.h"
 #include "nodes/pg_list.h"

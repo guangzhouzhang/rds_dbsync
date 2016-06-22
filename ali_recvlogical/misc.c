@@ -7,7 +7,6 @@
 
 #include "access/transam.h"
 #include "libpq/pqformat.h"
-//#include "pg_logicaldecode.h"
 #include "pqexpbuffer.h"
 
 #include "misc.h"

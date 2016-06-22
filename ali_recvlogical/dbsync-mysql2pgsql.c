@@ -1,28 +1,6 @@
-/*-------------------------------------------------------------------------
- *
- * pg_recvlogical.c - receive data from a logical decoding slot in a streaming
- *					  fashion and write it to a local file.
- *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
- *
- * IDENTIFICATION
- *		  src/bin/pg_basebackup/pg_recvlogical.c
- *-------------------------------------------------------------------------
- */
 
 #include "postgres_fe.h"
-
-#include <sys/stat.h>
-
-#include "lib/stringinfo.h"
-
-#include "access/xlog_internal.h"
-#include "common/fe_memutils.h"
-#include "getopt_long.h"
 #include "libpq-fe.h"
-#include "libpq/pqsignal.h"
-#include "pqexpbuffer.h"
-#include "libpq/pqformat.h"
 
 #include "pgsync.h"
 #include "ini.h"
