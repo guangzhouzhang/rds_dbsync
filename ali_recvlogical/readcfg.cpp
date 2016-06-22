@@ -21,68 +21,6 @@ using namespace std;
 
 using std::string;
 
-
-/*
-void _tolower(char *buf) {
-    do {
-        if (*buf >= 'A' && *buf <= 'Z') *buf |= 0x60;
-    } while (*buf++);
-    return;
-}
-*/
-
-bool trim(char *out, const char *in, const char *trimed) {
-    int targetlen;
-
-    if (!out || !in) {  // invalid string params
-        return false;
-    }
-
-    targetlen = strlen(in);
-
-    while (targetlen > 0) {
-        if (strchr(trimed, in[targetlen - 1]) ==
-            NULL)  // can't find stripped char
-            break;
-        else
-            targetlen--;
-    }
-
-    while (targetlen > 0) {
-        if (strchr(trimed, *in) == NULL)  // normal string
-            break;
-        else {
-            in++;
-            targetlen--;
-        }
-    }
-
-    memcpy(out, in, targetlen);
-    out[targetlen] = 0;
-    return true;
-}
-
-DataBuffer::DataBuffer(uint64_t size) : maxsize(size), length(0) {
-    this->data = (char *)malloc(this->maxsize);
-}
-
-DataBuffer::~DataBuffer() {
-    if (this->data) {
-        free(this->data);
-    }
-}
-
-uint64_t DataBuffer::append(const char *buf, uint64_t len) {
-    uint64_t copylen = min(len, maxsize - length);
-    if (this->data) {
-        memcpy(this->data + length, buf, copylen);
-        this->length += copylen;
-        return copylen;
-    } else {
-        return 0;
-    }
-}
-
 Config::Config(const string &filename) : _conf(NULL) {
     if (filename != "") this->_conf = ini_load(filename.c_str());
     if (this->_conf == NULL) {
