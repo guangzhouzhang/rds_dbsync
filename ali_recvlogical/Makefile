@@ -16,10 +16,10 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 
-all: all-lib demo.o dbsync.o mysql2pgsql.o dbsync-mysql2pgsql.o
+all: all-lib demo.o dbsync.o mysql2pgsql.o dbsync-mysql2pgsql.o readcfg.o
 	$(CXX) $(CFLAGS) demo.o ali_recvlogical.so $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o demo
 	$(CXX) $(CFLAGS) dbsync.o ali_recvlogical.so $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o dbsync
-	$(CXX) $(CFLAGS) ini.o mysql2pgsql.o dbsync-mysql2pgsql.o misc.o stringinfo.o $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -L/u01/mysql/lib -lmysqlclient -o mysql2pgsql
+	$(CXX) $(CFLAGS) readcfg.o ini.o mysql2pgsql.o dbsync-mysql2pgsql.o misc.o stringinfo.o $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -L/u01/mysql/lib -lmysqlclient -o mysql2pgsql
 
 
 clean:
