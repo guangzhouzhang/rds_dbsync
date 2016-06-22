@@ -6,8 +6,6 @@
 #include "ini.h"
 #include "mysql.h"
 
-static char *tabname = NULL;
-
 int
 main(int argc, char **argv)
 {
@@ -17,6 +15,7 @@ main(int argc, char **argv)
 	int		num_thread = 0;
 	void	*cfg = NULL;
 	char	*sport = NULL;
+	char *tabname = NULL;
 
 	cfg = init_config("my.cfg");
 	if (cfg == NULL)
@@ -45,6 +44,12 @@ main(int argc, char **argv)
 	}
 
 	src.port = atoi(sport);
+
+	if (argc == 2)
+	{
+		tabname = argv[1];
+		fprintf(stderr, "tablename %s", tabname);
+	}
 
 	if(tabname != NULL)
 	{
