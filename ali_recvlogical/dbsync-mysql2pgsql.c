@@ -9,7 +9,6 @@
 int
 main(int argc, char **argv)
 {
-	int		rc = 0;
 	char	*desc = NULL;
 	mysql_conn_info src;
 	int		num_thread = 0;
