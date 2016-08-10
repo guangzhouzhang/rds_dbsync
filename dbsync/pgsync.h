@@ -77,7 +77,8 @@ typedef struct mysql_conn_info
 	char	*encoding;
 	char	*db;
 	char	*encodingdir;
-	char	*tabname;
+	char	**tabnames;
+	char **queries;
 }mysql_conn_info;
 
 typedef struct Thread_hd
@@ -112,6 +113,7 @@ typedef struct Task_hd
 	int			id;
 	char	   *schemaname;		/* the schema name, or NULL */
 	char	   *relname;		/* the relation/sequence name */
+	char    *query;
 	long		count;
 	bool		complete;
 

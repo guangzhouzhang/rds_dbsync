@@ -28,8 +28,10 @@
 
 #include "mysql.h"
 #include "utils.h"
+#include <unistd.h> 
 
 static volatile bool time_to_abort = false;
+bool get_ddl_only = false;
 
 #define STMT_SHOW_TABLES "show full tables in `%s` where table_type='BASE TABLE'"
 
@@ -37,7 +39,7 @@ static volatile bool time_to_abort = false;
 
 static MYSQL *connect_to_mysql(mysql_conn_info* hd);
 static void *mysql2pgsql_copy_data(void *arg);
-static Oid *fetch_colmum_info(char *tabname, MYSQL_RES *my_res);
+static Oid *fetch_colmum_info(char *tabname, MYSQL_RES *my_res, bool is_target_gp);
 static void quote_literal_local_withoid(StringInfo s, const char *rawstr, Oid type, PQExpBuffer buffer);
 static int setup_connection_from_mysql(PGconn *conn);
 static void sigint_handler(int signum);
@@ -51,7 +53,7 @@ sigint_handler(int signum)
 #endif
 
 static Oid *
-fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
+fetch_colmum_info(char *tabname, MYSQL_RES *my_res, bool is_target_gp)
 {
 	MYSQL_FIELD *field;
 	int		col_num = 0;
@@ -61,7 +63,9 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 	bool	first = true;
 
 	ddl = createPQExpBuffer();
-	appendPQExpBuffer(ddl, "CREATE TABLE IF NOT EXISTS %s (", tabname);
+	appendPQExpBufferStr(ddl, "Reference DDL to create the target table:\n");
+	appendPQExpBuffer(ddl, "CREATE TABLE %s%s (", 
+					is_target_gp ? "" : "IF NOT EXISTS ", tabname);
 	
 	col_num = mysql_num_fields(my_res);
 	col_type = palloc0(sizeof(Oid) * col_num);
@@ -75,7 +79,7 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 		}
 		else
 		{
-			appendPQExpBufferStr(ddl, ",");
+			appendPQExpBufferStr(ddl, ", ");
 		}
 
 		field = mysql_fetch_field(my_res);
@@ -138,13 +142,14 @@ fetch_colmum_info(char *tabname, MYSQL_RES *my_res)
 				break;
 
 			default:
-				fprintf(stderr, "problem col %s type %d\n", field->org_name, type);
+				fprintf(stderr, "unsupported col %s type %d\n", field->org_name, type);
 				return NULL;
 		}
     }
-	appendPQExpBufferStr(ddl, ");");
+	
+	appendPQExpBuffer(ddl, ")%s;\n\n", (is_target_gp ? " with (APPENDONLY=true, ORIENTATION=column, CHECKSUM=true, OIDS=false) DISTRIBUTED BY (<distribution key>)" : ""));
 
-	fprintf(stderr, "%s\n", ddl->data);
+	fprintf(stderr, "%s", ddl->data);
 	
 	destroyPQExpBuffer(ddl);
 
@@ -220,6 +225,9 @@ connect_to_mysql(mysql_conn_info* hd)
 	return m_mysqlConnection;
 }
 
+/*
+ * Entry point for mysql2pgsql
+ */
 int 
 mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 {
@@ -237,6 +245,7 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	int		ntask = 0;
 	MYSQL	*conn_src = NULL;
 	MYSQL_RES	*my_res = NULL;
+	char **p = NULL;
 
 #ifndef WIN32
 	signal(SIGINT, sigint_handler);
@@ -266,7 +275,7 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	th_hd.desc_is_greenplum = is_greenplum(desc_conn);
 	PQfinish(desc_conn);
 
-	if (hd->tabname == NULL)
+	if (hd->tabnames == NULL)
 	{
 		PQExpBuffer	query;
 		MYSQL_ROW row;
@@ -296,6 +305,9 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 			th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd) * th_hd.ntask);
 		}
 
+		/*
+		  * The linked-array th_hd.task serves as a task queue for all the worker threads to pick up tasks and consume
+		  */
 		for (i = 0; i < th_hd.ntask; i++)
 		{
 			row = mysql_fetch_row(my_res);
@@ -304,9 +316,11 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 			th_hd.task[i].relname = pstrdup(row[0]);
 			th_hd.task[i].count = 0;
 			th_hd.task[i].complete = false;
-			if (i != th_hd.ntask - 1)
+
+			/* Set the former entry's link to this entry. Last entry's next feild would remain NULL */
+			if (i != 0)
 			{
-				th_hd.task[i].next = &th_hd.task[i+1];
+				th_hd.task[i-1].next = &th_hd.task[i+1];
 			}
 		}
 		mysql_free_result(my_res);
@@ -315,20 +329,35 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 	}
 	else
 	{
-		ntask = 1;
-		th_hd.ntask = 1;
+		for (i = 0, p = hd->tabnames; *p != NULL; p++, i++)
+		{
+		}
 
-		th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd));
-		th_hd.task[i].id = 0;
-		th_hd.task[i].schemaname = NULL;
-		th_hd.task[i].relname = pstrdup(hd->tabname);
-		th_hd.task[i].count = 0;
-		th_hd.task[i].complete = false;
-		th_hd.task[i].next = NULL;
+		ntask = i;
+		th_hd.ntask = ntask;
+		th_hd.task = (Task_hd *)palloc0(sizeof(Task_hd) * th_hd.ntask);
+
+		for (i = 0, p = hd->tabnames; *p != NULL; p++, i++)
+		{
+			th_hd.task[i].id = i;
+			th_hd.task[i].schemaname = NULL;
+			th_hd.task[i].relname = *p;
+			th_hd.task[i].query = hd->queries[i];
+
+			th_hd.task[i].count = 0;
+			th_hd.task[i].complete = false;
+			/* Set the former entry's link to this entry. Last entry's next feild would remain NULL */
+			if (i != 0)
+			{
+				th_hd.task[i-1].next = &th_hd.task[i];
+			}		
+		}
 	}
+
+	
 	th_hd.l_task = &(th_hd.task[0]);
 
-	th_hd.th = (ThreadArg *)malloc(sizeof(ThreadArg) * th_hd.nth);
+	th_hd.th = (ThreadArg *)palloc0(sizeof(ThreadArg) * th_hd.nth);
 	for (i = 0; i < th_hd.nth; i++)
 	{
 		th_hd.th[i].id = i;
@@ -369,11 +398,11 @@ mysql2pgsql_sync_main(char *desc, int nthread, mysql_conn_info *hd)
 		t_count += th_hd.task[i].count;
 	}
 
-	fprintf(stderr, "job migrate row %ld task row %ld \n", s_count, t_count);
+	fprintf(stderr, "number of rows migrated: %ld (number of source tables' rows: %ld) \n", s_count, t_count);
 	fprintf(stderr, "full sync time cost %.3f ms\n", elapsed_msec);
 	if (have_err)
 	{
-		fprintf(stderr, "migration process with errors\n");
+		fprintf(stderr, "errors occured during migration\n");
 	}
 
 	return 0;
@@ -423,6 +452,10 @@ mysql2pgsql_copy_data(void *arg)
 	setup_connection_from_mysql(target_conn);
 
 	query = createPQExpBuffer();
+
+	if (get_ddl_only)
+		fprintf(stderr, "\nReference commands to create target tables %s: \n***************\n\n",
+				isgp ? "(Please choose a distribution key and replace it with <distribution key> for each table)" : "");
 	while(1)
 	{
 		int			nlist = 0;
@@ -455,29 +488,45 @@ mysql2pgsql_copy_data(void *arg)
 		{
 			break;
 		}
-
-		start_copy_target_tx(target_conn, hd->desc_version, hd->desc_is_greenplum);
+	
+		if (!get_ddl_only)
+			start_copy_target_tx(target_conn, hd->desc_version, hd->desc_is_greenplum);
 
 		nspname = hd->mysql_src->db;
 		relname = curr->relname;
 
-		appendPQExpBuffer(query, STMT_SELECT,
+		//fprintf(stderr, "relname %s, query %s \n", relname, curr->query ? curr->query : "");
+
+		if (curr->query || *curr->query == '\0')
+			appendPQExpBufferStr(query, curr->query);
+		else
+			appendPQExpBuffer(query, STMT_SELECT,
 							 nspname,
 							 relname);
 
+		fprintf(stderr, "Query to get source data for target table %s: %s \n", relname, query->data);
 		ret = mysql_query(origin_conn, query->data);
 		if (ret != 0)
 		{
-			fprintf(stderr, "run query error: %s", mysql_error(origin_conn));
+			fprintf(stderr, "run query error: %s\n", mysql_error(origin_conn));
 			goto exit;
 		}
 		my_res = mysql_use_result(origin_conn);
-		column_oids = fetch_colmum_info(relname, my_res);
+		column_oids = fetch_colmum_info(relname, my_res, isgp);
 		if (column_oids == NULL)
 		{
 			fprintf(stderr, "get table %s column type error", relname);
 			goto exit;
 		}
+
+		if (get_ddl_only)
+		{
+			curr->complete = true;
+			mysql_free_result(my_res);
+			resetPQExpBuffer(query);
+			continue;
+		}
+		
 		n_col = mysql_num_fields(my_res);
 
 		resetPQExpBuffer(query);
@@ -556,6 +605,7 @@ mysql2pgsql_copy_data(void *arg)
 		curr->complete = true;
 		PQclear(res2);
 		resetPQExpBuffer(query);
+		mysql_free_result(my_res);
 
 		GETTIMEOFDAY(&after);
 		DIFF_MSEC(&after, &before, elapsed_msec);
@@ -564,6 +614,9 @@ mysql2pgsql_copy_data(void *arg)
 	}
 	
 	args->all_ok = true;
+
+	if (get_ddl_only)
+		fprintf(stderr, "***************\n\n");
 
 exit:
 
