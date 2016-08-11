@@ -23,4 +23,4 @@ all: all-lib demo.o dbsync-pgsql2pgsql.o mysql2pgsql.o dbsync-mysql2pgsql.o read
 
 
 clean:
-	rm -rf *.o dbsync mysql2pgsql demo
+	rm -rf *.o pgsql2pgsql mysql2pgsql demo
